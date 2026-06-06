@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -59,10 +60,12 @@ class TaskQueue:
                 direction=task.direction,
                 sources=task.sources,
                 depth=task.depth,
+                mode=task.mode,
+                checkpoint=task.checkpoint or {},
             )
             task.status = "running"
-            task.progress = 5
-            task.stage = "任务开始"
+            task.progress = max(task.progress, 5)
+            task.stage = "任务续跑开始" if task.checkpoint else "任务开始"
             session.commit()
 
         async def progress(value: int, stage: str) -> None:
@@ -70,9 +73,19 @@ class TaskQueue:
                 task = session.get(Task, task_id)
                 if task is None:
                     return
-                task.progress = value
+                task.progress = max(task.progress, value)
                 task.stage = stage
                 session.commit()
+
+        async def save_checkpoint(patch: dict[str, Any]) -> None:
+            with self._session_factory() as session:
+                task = session.get(Task, task_id)
+                if task is None:
+                    return
+                task.checkpoint = _deep_merge(task.checkpoint or {}, patch)
+                session.commit()
+
+        progress.save_checkpoint = save_checkpoint  # type: ignore[attr-defined]
 
         try:
             generated = await self._provider.generate(request, progress)
@@ -105,23 +118,30 @@ class TaskQueue:
                     task.stage = "报告已生成"
                     task.report_id = report.id
                     task.error = None
+                    task.checkpoint = {}
                 session.commit()
         except Exception as exc:
             with self._session_factory() as session:
                 task = session.get(Task, task_id)
                 if task is not None:
                     task.status = "failed"
-                    task.stage = "任务失败"
+                    task.stage = "任务失败，可续跑"
                     task.error = str(exc)
                     session.commit()
 
 
 def create_task(session: Session, request: GenerateTaskRequest) -> Task:
+    direction = request.direction.strip()
+    if request.mode == "yolo":
+        direction = direction or "YOLO 自动探索"
+
     task = Task(
         id=str(uuid4()),
-        direction=request.direction.strip() or "随机开发者工具灵感",
+        direction=direction or "随机开发者工具灵感",
         sources=request.sources,
         depth=request.depth,
+        mode=request.mode,
+        checkpoint={},
         status="pending",
         progress=0,
         stage="等待执行",
@@ -130,3 +150,13 @@ def create_task(session: Session, request: GenerateTaskRequest) -> Task:
     session.commit()
     session.refresh(task)
     return task
+
+
+def _deep_merge(current: dict[str, Any], patch: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(current)
+    for key, value in patch.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(merged[key], value)
+        else:
+            merged[key] = value
+    return merged

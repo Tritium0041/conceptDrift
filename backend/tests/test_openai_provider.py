@@ -89,6 +89,97 @@ async def test_openai_provider_extracts_output_text_and_clamps_scores() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_provider_request_payload_supports_yolo_mode() -> None:
+    requests: list[httpx.Request] = []
+    response_payload = {
+        "title": "Localhost OAuth Callback Debugger",
+        "summary": "YOLO selected a concrete developer workflow pain.",
+        "markdown": "# Localhost OAuth Callback Debugger\n\n## MVP 建议\nShip it.",
+        "scores": {
+            "technical_feasibility": 82,
+            "market_novelty": 78,
+            "business_potential": 69,
+        },
+        "tags": ["yolo", "oauth"],
+        "sources": [
+            {
+                "source": "Hacker News",
+                "title": "OAuth callback thread",
+                "url": "https://news.ycombinator.com",
+                "summary": "A visible developer pain.",
+                "signal_score": 84,
+            }
+        ],
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(request)
+        return httpx.Response(200, json={"output_text": json.dumps(response_payload)})
+
+    provider = OpenAIInspirationProvider(
+        _config(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    report = await provider.generate(
+        GenerateTaskRequest(direction="", sources=["hackernews"], depth="quick", mode="yolo"),
+        _progress,
+    )
+
+    sent_body = json.loads(requests[0].content)
+    user_content = sent_body["input"][1]["content"]
+    assert report.title == "Localhost OAuth Callback Debugger"
+    assert "探索模式：YOLO 自动选题" in user_content
+    assert "不要要求用户补充方向" in user_content
+    assert "探索方向：" not in user_content
+
+
+@pytest.mark.asyncio
+async def test_openai_provider_reuses_saved_output_text() -> None:
+    response_payload = {
+        "title": "Saved Response Report",
+        "summary": "Parsed from checkpoint.",
+        "markdown": "# Saved Response Report\n\n## MVP 建议\nShip it.",
+        "scores": {
+            "technical_feasibility": 82,
+            "market_novelty": 74,
+            "business_potential": 68,
+        },
+        "tags": ["resume"],
+        "sources": [
+            {
+                "source": "Checkpoint",
+                "title": "Saved model output",
+                "url": "https://example.com/checkpoint",
+                "summary": "The output was saved before retry.",
+                "signal_score": 80,
+            }
+        ],
+    }
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        raise AssertionError("Network should not be called when output_text is checkpointed")
+
+    provider = OpenAIInspirationProvider(
+        _config(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(handler)),
+    )
+
+    report = await provider.generate(
+        GenerateTaskRequest(
+            direction="saved output",
+            sources=["hackernews"],
+            depth="quick",
+            checkpoint={"response": {"output_text": json.dumps(response_payload)}},
+        ),
+        _progress,
+    )
+
+    assert report.title == "Saved Response Report"
+    assert report.tags == ["resume"]
+
+
+@pytest.mark.asyncio
 async def test_openai_provider_reports_api_errors() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(

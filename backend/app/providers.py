@@ -11,10 +11,6 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from app.agent_runtime import (
-    AgentRunSpec,
-    AgentRuntime,
-    AgentRuntimeConfig,
-    AgentsSdkRuntime,
     CodexResearchConfig,
     CodexResearchRuntime,
 )
@@ -33,6 +29,15 @@ from app.source_tools import (
 
 ProgressCallback = Callable[[int, str], Awaitable[None]]
 logger = logging.getLogger("uvicorn.error")
+
+
+async def _save_resume_checkpoint(
+    progress: ProgressCallback,
+    patch: dict[str, Any],
+) -> None:
+    saver = getattr(progress, "save_checkpoint", None)
+    if saver is not None:
+        await saver(patch)
 
 
 @dataclass(frozen=True)
@@ -108,6 +113,13 @@ class _SourceAgentPayload(BaseModel):
     signals: list[_OpenAISourcePayload]
 
 
+class _YoloDiscoveryPayload(BaseModel):
+    direction: str
+    rationale: str
+    signals: list[_OpenAISourcePayload]
+    rejected_directions: list[str]
+
+
 OPENAI_REPORT_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -145,6 +157,32 @@ OPENAI_REPORT_JSON_SCHEMA: dict[str, Any] = {
     },
 }
 
+YOLO_DISCOVERY_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["direction", "rationale", "signals", "rejected_directions"],
+    "properties": {
+        "direction": {"type": "string"},
+        "rationale": {"type": "string"},
+        "signals": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": ["source", "title", "url", "summary", "signal_score"],
+                "properties": {
+                    "source": {"type": "string"},
+                    "title": {"type": "string"},
+                    "url": {"type": "string"},
+                    "summary": {"type": "string"},
+                    "signal_score": {"type": "integer"},
+                },
+            },
+        },
+        "rejected_directions": {"type": "array", "items": {"type": "string"}},
+    },
+}
+
 SOURCE_RESEARCH_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -178,7 +216,10 @@ class MockInspirationProvider:
         request: GenerateTaskRequest,
         progress: ProgressCallback,
     ) -> GeneratedReport:
-        direction = request.direction.strip() or "随机开发者工具灵感"
+        direction = self._direction(request)
+        if request.mode == "yolo":
+            await progress(12, "YOLO agent 自动发现候选方向")
+            await asyncio.sleep(0.01)
         await progress(15, "采集多元灵感信号")
         await asyncio.sleep(0.01)
         sources = self._build_sources(request.sources, direction)
@@ -196,15 +237,23 @@ class MockInspirationProvider:
 
         title = f"{direction}：开发者灵感报告"
         tags = self._tags(direction, request.sources)
+        if request.mode == "yolo":
+            tags = ["yolo", *tags]
         scores = {
             "technical_feasibility": feasibility,
             "market_novelty": novelty,
             "business_potential": 72 if request.depth != "quick" else 64,
         }
-        summary = (
-            f"围绕“{direction}”生成的轻量调研报告。该方向适合以个人开发者可维护的 "
-            "MVP 先验证需求，再逐步扩展数据源、自动化和付费能力。"
-        )
+        if request.mode == "yolo":
+            summary = (
+                f"YOLO 模式自动选择“{direction}”作为本次探索方向。该方向适合以个人开发者可维护的 "
+                "MVP 先验证需求，再逐步扩展数据源、自动化和付费能力。"
+            )
+        else:
+            summary = (
+                f"围绕“{direction}”生成的轻量调研报告。该方向适合以个人开发者可维护的 "
+                "MVP 先验证需求，再逐步扩展数据源、自动化和付费能力。"
+            )
         markdown = self._markdown(direction, request, summary, scores, sources)
         return GeneratedReport(
             title=title,
@@ -214,6 +263,11 @@ class MockInspirationProvider:
             tags=tags,
             sources=sources,
         )
+
+    def _direction(self, request: GenerateTaskRequest) -> str:
+        if request.mode == "yolo":
+            return "AI 原生开发工作流机会雷达"
+        return request.direction.strip() or "随机开发者工具灵感"
 
     def _build_sources(self, source_names: list[str], direction: str) -> list[GeneratedSource]:
         labels = {
@@ -312,19 +366,11 @@ class OpenAIAgentsProvider:
     def __init__(
         self,
         config: OpenAIProviderConfig,
-        runtime: AgentRuntime | None = None,
+        runtime: Any | None = None,
         research_runtime: ResearchRuntime | None = None,
     ) -> None:
         self._config = config
-        self._runtime = runtime or AgentsSdkRuntime(
-            AgentRuntimeConfig(
-                api_key=config.api_key,
-                base_url=config.base_url,
-                model=config.model,
-                timeout_seconds=config.timeout_seconds,
-                tracing_disabled=config.tracing_disabled,
-            )
-        )
+        _ = runtime
         self._research_runtime = research_runtime or CodexResearchRuntime(
             CodexResearchConfig(
                 api_key=config.api_key,
@@ -346,12 +392,43 @@ class OpenAIAgentsProvider:
                 "OPENAI_API_KEY is required when CONCEPTDRIFT_AGENT_PROVIDER=codex"
             )
 
-        direction = request.direction.strip() or "随机开发者工具灵感"
-        await progress(8, "启动 OpenAI Agents SDK 与 Codex 调研")
+        checkpoint = self._codex_checkpoint(request)
+        direction = checkpoint.get("direction") or request.direction.strip() or "随机开发者工具灵感"
+        await progress(8, "启动 Codex 调研与编排")
+
+        yolo_discovery: dict[str, Any] | None = None
+        if request.mode == "yolo":
+            cached_yolo = checkpoint.get("yolo_discovery")
+            if isinstance(cached_yolo, dict):
+                await progress(12, "复用 YOLO 自动发现方向")
+                yolo_discovery = self._restore_yolo_discovery(cached_yolo, request)
+                direction = yolo_discovery["direction"]
+            else:
+                await progress(12, "YOLO agent 联网发现候选方向")
+                yolo_discovery = await self._run_yolo_discovery(request)
+                direction = yolo_discovery["direction"]
+                await _save_resume_checkpoint(
+                    progress,
+                    {
+                        "codex": {
+                            "direction": direction,
+                            "yolo_discovery": self._yolo_discovery_checkpoint(yolo_discovery),
+                        }
+                    },
+                )
+        elif checkpoint.get("direction"):
+            await progress(12, "复用已确认探索方向")
 
         await progress(18, "Codex agent 并发调研外部信号")
+        research_request = GenerateTaskRequest(
+            direction=direction,
+            sources=request.sources,
+            depth=request.depth,
+            mode=request.mode,
+            checkpoint=request.checkpoint,
+        )
         source_results = await self._run_source_agents(
-            request=request,
+            request=research_request,
             progress=progress,
         )
         snapshots = [result["snapshot"] for result in source_results]
@@ -359,42 +436,154 @@ class OpenAIAgentsProvider:
             {"source": result["snapshot"].source, "analysis": result["analysis"]}
             for result in source_results
         ]
+        if yolo_discovery is not None:
+            snapshots = [yolo_discovery["snapshot"], *snapshots]
+            source_analyses = [
+                {
+                    "source": yolo_discovery["snapshot"].source,
+                    "analysis": yolo_discovery["analysis"],
+                },
+                *source_analyses,
+            ]
 
         await progress(65, "Codex agent 复核技术可行性")
-        technical_analysis = await self._research_runtime.run(
-            self._technical_research_prompt(
-                direction=direction,
-                depth=request.depth,
-                source_analyses=source_analyses,
-                snapshots=snapshots,
+        cached_technical_analysis = checkpoint.get("technical_analysis")
+        if isinstance(cached_technical_analysis, str) and cached_technical_analysis.strip():
+            await progress(65, "复用技术可行性复核")
+            technical_analysis = cached_technical_analysis
+        else:
+            technical_analysis = await self._research_runtime.run(
+                self._technical_research_prompt(
+                    direction=direction,
+                    depth=request.depth,
+                    source_analyses=source_analyses,
+                    snapshots=snapshots,
+                )
             )
-        )
+            await _save_resume_checkpoint(
+                progress,
+                {"codex": {"direction": direction, "technical_analysis": technical_analysis}},
+            )
 
-        await progress(82, "Orchestrator Agent 汇总报告")
-        final_text = await self._runtime.run(
-            AgentRunSpec(
-                name="ConceptDrift Orchestrator Agent",
-                instructions=self._orchestrator_instructions(),
-                input=json.dumps(
+        cached_final_text = checkpoint.get("orchestrator_output_text")
+        if isinstance(cached_final_text, str) and cached_final_text.strip():
+            await progress(82, "复用 Codex Orchestrator 汇总报告")
+            final_text = cached_final_text
+        else:
+            await progress(82, "Codex Orchestrator 汇总报告")
+            final_text = await self._research_runtime.run(
+                self._orchestrator_prompt(
                     {
                         "direction": direction,
+                        "request_mode": request.mode,
+                        "original_direction": request.direction.strip(),
+                        "yolo_discovery": (
+                            yolo_discovery["snapshot"].as_dict()
+                            if yolo_discovery is not None
+                            else None
+                        ),
                         "depth": request.depth,
                         "requested_sources": request.sources,
                         "source_snapshots": [snapshot.as_dict() for snapshot in snapshots],
                         "source_analyses": source_analyses,
                         "codex_technical_analysis": technical_analysis,
-                        "required_json_schema": OPENAI_REPORT_JSON_SCHEMA,
-                    },
-                    ensure_ascii=False,
+                    }
                 ),
-                max_turns=10,
-                stream=True,
-            ),
-            on_event=lambda event: progress(88, f"Orchestrator 流式事件：{event}"),
-        )
+                output_schema=OPENAI_REPORT_JSON_SCHEMA,
+            )
 
         await progress(95, "校验多 Agent 报告结构")
-        return self._parse_report_text(final_text)
+        report = self._parse_report_text(final_text)
+        if not isinstance(cached_final_text, str) or not cached_final_text.strip():
+            await _save_resume_checkpoint(
+                progress,
+                {"codex": {"direction": direction, "orchestrator_output_text": final_text}},
+            )
+        return report
+
+    async def _run_yolo_discovery(self, request: GenerateTaskRequest) -> dict[str, Any]:
+        text = await self._research_runtime.run(
+            self._yolo_discovery_prompt(request),
+            output_schema=YOLO_DISCOVERY_JSON_SCHEMA,
+        )
+        return self._parse_yolo_discovery_text(text, request)
+
+    def _codex_checkpoint(self, request: GenerateTaskRequest) -> dict[str, Any]:
+        checkpoint = request.checkpoint.get("codex")
+        return checkpoint if isinstance(checkpoint, dict) else {}
+
+    def _yolo_discovery_checkpoint(self, discovery: dict[str, Any]) -> dict[str, Any]:
+        snapshot = discovery["snapshot"]
+        return {
+            "direction": discovery["direction"],
+            "snapshot": snapshot.as_dict(),
+            "analysis": discovery["analysis"],
+        }
+
+    def _restore_yolo_discovery(
+        self,
+        checkpoint: dict[str, Any],
+        request: GenerateTaskRequest,
+    ) -> dict[str, Any]:
+        snapshot = self._snapshot_from_dict(checkpoint.get("snapshot"))
+        if snapshot is None:
+            return self._fallback_yolo_discovery(
+                request,
+                "Saved YOLO checkpoint was incomplete",
+                str(checkpoint.get("analysis") or ""),
+            )
+        direction = str(checkpoint.get("direction") or "").strip() or self._fallback_yolo_direction()
+        return {
+            "direction": direction[:300],
+            "snapshot": snapshot,
+            "analysis": str(checkpoint.get("analysis") or "").strip(),
+        }
+
+    def _restore_source_result(self, checkpoint: dict[str, Any]) -> dict[str, Any] | None:
+        snapshot = self._snapshot_from_dict(checkpoint.get("snapshot"))
+        if snapshot is None:
+            return None
+        return {
+            "snapshot": snapshot,
+            "analysis": str(checkpoint.get("analysis") or "").strip(),
+        }
+
+    def _snapshot_from_dict(self, payload: Any) -> SourceSnapshot | None:
+        if not isinstance(payload, dict):
+            return None
+        raw_signals = payload.get("signals")
+        if not isinstance(raw_signals, list):
+            return None
+        signals: list[SourceSignal] = []
+        for item in raw_signals:
+            if not isinstance(item, dict):
+                continue
+            summary = str(item.get("summary") or "").strip()
+            if not summary:
+                continue
+            try:
+                signal_score = int(item.get("signal_score") or 0)
+            except (TypeError, ValueError):
+                signal_score = 50
+            signals.append(
+                SourceSignal(
+                    source_id=str(item.get("source_id") or payload.get("source_id") or ""),
+                    source=str(item.get("source") or payload.get("source") or "Codex").strip(),
+                    title=str(item.get("title") or item.get("source") or "Codex signal").strip(),
+                    url=str(item.get("url") or payload.get("url") or "https://example.com").strip(),
+                    summary=summary,
+                    signal_score=score(signal_score),
+                )
+            )
+        if not signals:
+            return None
+        return SourceSnapshot(
+            source_id=str(payload.get("source_id") or "codex"),
+            source=str(payload.get("source") or "Codex").strip(),
+            url=str(payload.get("url") or signals[0].url).strip(),
+            signals=signals,
+            error=payload.get("error") if isinstance(payload.get("error"), str) else None,
+        )
 
     async def _run_source_agents(
         self,
@@ -402,6 +591,10 @@ class OpenAIAgentsProvider:
         progress: ProgressCallback,
     ) -> list[dict[str, Any]]:
         direction = request.direction.strip() or "随机开发者工具灵感"
+        checkpoint = self._codex_checkpoint(request)
+        cached_sources = checkpoint.get("sources")
+        source_checkpoints = cached_sources if isinstance(cached_sources, dict) else {}
+        results_by_source: dict[str, dict[str, Any]] = {}
 
         async def run_one(source_id: str) -> dict[str, Any]:
             target = build_source_research_target(source_id)
@@ -415,9 +608,82 @@ class OpenAIAgentsProvider:
                 output_schema=SOURCE_RESEARCH_JSON_SCHEMA,
             )
             snapshot, analysis = self._parse_source_research_text(text, source_id, direction)
-            return {"snapshot": snapshot, "analysis": analysis}
+            result = {"snapshot": snapshot, "analysis": analysis}
+            await _save_resume_checkpoint(
+                progress,
+                {
+                    "codex": {
+                        "direction": direction,
+                        "sources": {
+                            source_id: {
+                                "snapshot": snapshot.as_dict(),
+                                "analysis": analysis,
+                            }
+                        },
+                    }
+                },
+            )
+            return result
 
-        return list(await asyncio.gather(*(run_one(source_id) for source_id in request.sources)))
+        missing_sources: list[str] = []
+        for source_id in request.sources:
+            cached_source = source_checkpoints.get(source_id)
+            if isinstance(cached_source, dict):
+                restored = self._restore_source_result(cached_source)
+                if restored is not None:
+                    await progress(28, f"复用 Codex agent 调研 {restored['snapshot'].source}")
+                    results_by_source[source_id] = restored
+                    continue
+            missing_sources.append(source_id)
+
+        gathered = await asyncio.gather(
+            *(run_one(source_id) for source_id in missing_sources),
+            return_exceptions=True,
+        )
+        errors: list[BaseException] = []
+        for source_id, result in zip(missing_sources, gathered, strict=True):
+            if isinstance(result, BaseException):
+                errors.append(result)
+            else:
+                results_by_source[source_id] = result
+        if errors:
+            raise errors[0]
+
+        return [results_by_source[source_id] for source_id in request.sources]
+
+    def _yolo_discovery_prompt(self, request: GenerateTaskRequest) -> str:
+        seed = request.direction.strip()
+        return json.dumps(
+            {
+                "role": "Codex YOLO direction discovery agent",
+                "language": "zh-CN",
+                "task": (
+                    "Autonomously discover one interesting, researchable developer-product "
+                    "direction. Use your own browser/web-search/network tools to scan current "
+                    "public web signals. Do not ask the user for a direction and do not depend "
+                    "on ConceptDrift backend scraping APIs."
+                ),
+                "optional_seed": seed if seed and seed != "YOLO 自动探索" else "",
+                "depth": request.depth,
+                "source_targets": [
+                    build_source_research_target(source_id).as_dict()
+                    for source_id in request.sources
+                ],
+                "selection_criteria": [
+                    "Pick a direction with visible current developer pain, not a broad category.",
+                    "Prefer directions that a solo developer could prototype in days or weeks.",
+                    "Use fresh public signals from inspected URLs and avoid generic AI wrapper ideas.",
+                    "Reject at least two weaker alternatives and briefly name why they lost.",
+                ],
+                "requirements": [
+                    "Return only JSON matching the supplied output schema.",
+                    "direction must be specific enough to become the final report topic.",
+                    "signals must include 2-5 inspected public URLs when available.",
+                    "rationale must explain why this direction is worth exploring now.",
+                ],
+            },
+            ensure_ascii=False,
+        )
 
     def _source_research_prompt(
         self,
@@ -474,6 +740,86 @@ class OpenAIAgentsProvider:
             ensure_ascii=False,
         )
 
+    def _orchestrator_prompt(self, payload: dict[str, Any]) -> str:
+        return json.dumps(
+            {
+                "role": "Codex Orchestrator Agent",
+                "language": "zh-CN",
+                "task": (
+                    "Synthesize the final ConceptDrift developer inspiration report using the "
+                    "provided Codex research snapshots, source analyses, and technical review. "
+                    "Do not call ConceptDrift backend scraping APIs. Treat source_snapshots as "
+                    "the evidence base and only use browser/web-search tools if a current fact "
+                    "is materially necessary."
+                ),
+                "input": payload,
+                "requirements": [
+                    "Return only JSON matching the supplied output schema.",
+                    (
+                        "markdown must be a complete Markdown report with 摘要、核心概念、"
+                        "技术可行性、市场新颖性、商业潜力、灵感来源、"
+                        "MVP 建议."
+                    ),
+                    (
+                        "When request_mode is yolo, center the report on input.direction "
+                        "and explain why YOLO Discovery selected it."
+                    ),
+                    (
+                        "scores.technical_feasibility, scores.market_novelty, and "
+                        "scores.business_potential must be integers from 0 to 100."
+                    ),
+                    "sources must be grounded in the provided source_snapshots.",
+                ],
+            },
+            ensure_ascii=False,
+        )
+
+    def _parse_yolo_discovery_text(
+        self,
+        text: str,
+        request: GenerateTaskRequest,
+    ) -> dict[str, Any]:
+        try:
+            payload = _YoloDiscoveryPayload.model_validate_json(text)
+        except ValidationError:
+            return self._fallback_yolo_discovery(
+                request,
+                "Codex YOLO discovery output was not valid JSON",
+                text,
+            )
+
+        direction = payload.direction.strip() or self._fallback_yolo_direction()
+        signals = [
+            SourceSignal(
+                source_id="yolo_discovery",
+                source=item.source.strip() or "YOLO Discovery",
+                title=item.title.strip() or "YOLO discovery signal",
+                url=item.url.strip() or self._fallback_yolo_url(request),
+                summary=item.summary.strip(),
+                signal_score=score(item.signal_score),
+            )
+            for item in payload.signals
+            if item.summary.strip()
+        ]
+        if not signals:
+            return self._fallback_yolo_discovery(
+                request,
+                "Codex YOLO discovery returned no usable signals",
+                payload.rationale,
+            )
+
+        rejected = [item.strip() for item in payload.rejected_directions if item.strip()]
+        analysis = payload.rationale.strip()
+        if rejected:
+            analysis = f"{analysis}\n\n被淘汰方向：{'; '.join(rejected)}"
+        snapshot = SourceSnapshot(
+            source_id="yolo_discovery",
+            source="YOLO Discovery",
+            url=signals[0].url,
+            signals=signals,
+        )
+        return {"direction": direction[:300], "snapshot": snapshot, "analysis": analysis}
+
     def _parse_source_research_text(
         self,
         text: str,
@@ -526,6 +872,41 @@ class OpenAIAgentsProvider:
         )
         return snapshot, analysis.strip() or reason
 
+    def _fallback_yolo_discovery(
+        self,
+        request: GenerateTaskRequest,
+        reason: str,
+        analysis: str,
+    ) -> dict[str, Any]:
+        direction = self._fallback_yolo_direction()
+        signal = SourceSignal(
+            source_id="yolo_discovery",
+            source="YOLO Discovery",
+            title=f"YOLO fallback: {direction}",
+            url=self._fallback_yolo_url(request),
+            summary=(
+                f"YOLO 方向发现未能返回可解析实时条目，原因：{reason}。"
+                "后续调研将围绕一个可由个人开发者验证的默认方向继续。"
+            ),
+            signal_score=40,
+        )
+        snapshot = SourceSnapshot(
+            source_id="yolo_discovery",
+            source="YOLO Discovery",
+            url=signal.url,
+            signals=[signal],
+            error=reason,
+        )
+        return {"direction": direction, "snapshot": snapshot, "analysis": analysis.strip() or reason}
+
+    def _fallback_yolo_direction(self) -> str:
+        return "AI 原生开发工作流机会雷达"
+
+    def _fallback_yolo_url(self, request: GenerateTaskRequest) -> str:
+        if request.sources:
+            return source_home_url(request.sources[0])
+        return "https://github.com/trending"
+
     def _orchestrator_instructions(self) -> str:
         return (
             "你是 ConceptDrift 的中心编排 Agent。你必须综合 source_analyses、"
@@ -533,6 +914,8 @@ class OpenAIAgentsProvider:
             "只返回 JSON，不要 Markdown code fence，不要解释。JSON 必须符合输入中的 "
             "required_json_schema。markdown 字段内部必须是完整 Markdown 报告，并包含："
             "摘要、核心概念、技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。"
+            "当 request_mode 为 yolo 时，报告必须围绕 direction 字段里的自动发现方向，"
+            "并在摘要或灵感来源中说明 YOLO Discovery 为什么选择它。"
             "scores 三个分数必须是 0-100 整数；sources 必须来自 Codex 调研生成的 "
             "source_snapshots。"
         )
@@ -558,28 +941,77 @@ class OpenAIResponsesProvider:
         if not self._config.api_key.strip():
             raise RuntimeError(
                 "OPENAI_API_KEY is required when CONCEPTDRIFT_AGENT_PROVIDER=response"
-            )
+        )
 
         await progress(10, "连接 OpenAI Agent")
-        payload = self._request_payload(request)
+        checkpoint = self._response_checkpoint(request)
+        cached_payload = checkpoint.get("payload")
+        payload = cached_payload if isinstance(cached_payload, dict) else self._request_payload(request)
+        await _save_resume_checkpoint(progress, {"response": {"payload": payload}})
         await progress(35, "OpenAI Agent 正在调研与生成结构化报告")
 
-        response_payload = await self._post_response(payload)
-        await progress(75, "解析 OpenAI Agent 返回结果")
+        cached_text = checkpoint.get("output_text")
+        if isinstance(cached_text, str) and cached_text.strip():
+            await progress(75, "复用 OpenAI Agent 返回结果")
+            text = cached_text
+        else:
+            response_payload = await self._post_response(payload)
+            await progress(75, "解析 OpenAI Agent 返回结果")
+            text = self._extract_output_text(response_payload)
+            await _save_resume_checkpoint(
+                progress,
+                {"response": {"payload": payload, "output_text": text}},
+            )
 
-        text = self._extract_output_text(response_payload)
         report = self._parse_report_text(text)
         await progress(90, "校验报告结构并准备入库")
         return report
 
+    def _response_checkpoint(self, request: GenerateTaskRequest) -> dict[str, Any]:
+        checkpoint = request.checkpoint.get("response")
+        return checkpoint if isinstance(checkpoint, dict) else {}
+
     def _request_payload(self, request: GenerateTaskRequest) -> dict[str, Any]:
-        direction = request.direction.strip() or "随机开发者工具灵感"
+        seed = request.direction.strip()
+        direction = seed or "随机开发者工具灵感"
         source_list = ", ".join(request.sources)
         depth_instruction = {
             "quick": "输出更短，突出可快速验证的 MVP。",
             "standard": "保持完整但避免冗长，覆盖调研、判断和 MVP 路线。",
             "deep": "输出更深入，补充风险、差异化和商业化判断。",
         }.get(request.depth, "保持标准深度。")
+        if request.mode == "yolo":
+            task_instruction = (
+                "探索模式：YOLO 自动选题\n"
+                f"可选种子：{seed if seed and seed != 'YOLO 自动探索' else '无'}\n"
+                f"信号源标识：{source_list}\n"
+                f"调研深度：{request.depth}\n"
+                f"{depth_instruction}\n\n"
+                "要求：\n"
+                "1. 先自主选择一个当前值得研究的具体开发者产品方向，不要要求用户补充方向。\n"
+                "2. title、summary、markdown 都必须围绕你选择出的方向。\n"
+                "3. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
+                "技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。\n"
+                "4. 在摘要或灵感来源中说明 YOLO 选择该方向的理由。\n"
+                "5. scores 的三个分数必须是 0-100 的整数。\n"
+                "6. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
+                "给出可追溯的公开主页 URL，并在 summary 中说明它代表的信号类型。"
+            )
+        else:
+            task_instruction = (
+                f"探索方向：{direction}\n"
+                f"信号源标识：{source_list}\n"
+                f"调研深度：{request.depth}\n"
+                f"{depth_instruction}\n\n"
+                "要求：\n"
+                "1. title 使用中文或中英混合，明确项目方向。\n"
+                "2. summary 用 2-4 句话说明机会点。\n"
+                "3. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
+                "技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。\n"
+                "4. scores 的三个分数必须是 0-100 的整数。\n"
+                "5. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
+                "给出可追溯的公开主页 URL，并在 summary 中说明它代表的信号类型。"
+            )
 
         return {
             "model": self._config.model,
@@ -588,26 +1020,14 @@ class OpenAIResponsesProvider:
                     "role": "system",
                     "content": (
                         "你是 ConceptDrift 的开发者灵感调研 Agent。"
-                        "你必须根据用户给定方向生成可执行的项目灵感报告，"
+                        "你必须根据请求模式生成可执行的项目灵感报告；"
+                        "guided 模式围绕用户方向，yolo 模式先自主选择方向。"
                         "只输出符合 JSON schema 的结构化数据。"
                     ),
                 },
                 {
                     "role": "user",
-                    "content": (
-                        f"探索方向：{direction}\n"
-                        f"信号源标识：{source_list}\n"
-                        f"调研深度：{request.depth}\n"
-                        f"{depth_instruction}\n\n"
-                        "要求：\n"
-                        "1. title 使用中文或中英混合，明确项目方向。\n"
-                        "2. summary 用 2-4 句话说明机会点。\n"
-                        "3. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
-                        "技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。\n"
-                        "4. scores 的三个分数必须是 0-100 的整数。\n"
-                        "5. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
-                        "给出可追溯的公开主页 URL，并在 summary 中说明它代表的信号类型。"
-                    ),
+                    "content": task_instruction,
                 },
             ],
             "text": {

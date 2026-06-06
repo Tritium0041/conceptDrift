@@ -2,12 +2,14 @@ export const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_BASE_URL?.replace(/\/$/, "") ?? "http://127.0.0.1:8000";
 
 export type TaskStatus = "pending" | "running" | "succeeded" | "failed";
+export type TaskMode = "guided" | "yolo";
 
 export type Task = {
   id: string;
   direction: string;
   sources: string[];
   depth: string;
+  mode: TaskMode;
   status: TaskStatus;
   progress: number;
   stage: string;
@@ -94,6 +96,10 @@ export async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> 
     throw new Error(detail || `Request failed: ${response.status}`);
   }
   return (await response.json()) as T;
+}
+
+export function resumeTask(taskId: string) {
+  return apiFetch<Task>(`/api/tasks/${taskId}/resume`, { method: "POST" });
 }
 
 export function exportUrl(reportId: number, format: "markdown" | "pdf") {

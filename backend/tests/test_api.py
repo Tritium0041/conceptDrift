@@ -218,6 +218,107 @@ def test_generate_task_to_report(tmp_path: Path) -> None:
         assert report["sources"][0]["source"] == "GitHub Trending"
 
 
+def test_generate_yolo_task_to_report(tmp_path: Path) -> None:
+    with make_client(tmp_path) as client:
+        create_response = client.post(
+            "/api/tasks/generate",
+            json={
+                "direction": "",
+                "sources": ["github_trending", "hackernews"],
+                "depth": "quick",
+                "mode": "yolo",
+            },
+        )
+        assert create_response.status_code == 201
+        created = create_response.json()
+        assert created["mode"] == "yolo"
+        assert created["direction"] == "YOLO 自动探索"
+
+        task_payload = wait_for_task(client, created["id"])
+        assert task_payload["status"] == "succeeded"
+        assert task_payload["mode"] == "yolo"
+
+        report_response = client.get(f"/api/tasks/{created['id']}/result")
+        assert report_response.status_code == 200
+        report = report_response.json()
+
+    assert report["title"].startswith("AI 原生开发工作流机会雷达")
+    assert "YOLO 模式自动选择" in report["summary"]
+    assert "yolo" in report["tags"]
+
+
+def test_resume_failed_task_reuses_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class ResumableProvider:
+        def __init__(self) -> None:
+            self.attempts = 0
+            self.seen_checkpoints: list[dict] = []
+
+        async def generate(self, request, progress):  # type: ignore[no-untyped-def]
+            self.attempts += 1
+            self.seen_checkpoints.append(request.checkpoint)
+            if self.attempts == 1:
+                await progress(72, "已保存前置调研")
+                await progress.save_checkpoint({"custom": {"source_research": "done"}})
+                raise RuntimeError("Error code: 502 - retryable gateway")
+
+            assert request.checkpoint == {"custom": {"source_research": "done"}}
+            await progress(90, "续跑完成")
+            return GeneratedReport(
+                title="Resumed report",
+                summary="Checkpoint was reused.",
+                markdown="# Resumed report\n\n## MVP 建议\nShip it.",
+                scores={
+                    "technical_feasibility": 80,
+                    "market_novelty": 70,
+                    "business_potential": 60,
+                },
+                tags=["resume"],
+                sources=[
+                    GeneratedSource(
+                        source="Resume Test",
+                        title="Saved checkpoint",
+                        url="https://example.com/resume",
+                        summary="The second run reused the saved checkpoint.",
+                        signal_score=75,
+                    )
+                ],
+            )
+
+    provider = ResumableProvider()
+    monkeypatch.setattr("app.main.build_provider", lambda settings: provider)
+    settings = Settings(
+        database_url=f"sqlite:///{tmp_path / 'resume.sqlite3'}",
+        agent_provider="mock",
+        openai_api_key="",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        create_response = client.post(
+            "/api/tasks/generate",
+            json={"direction": "resume smoke", "sources": ["reddit"], "depth": "quick"},
+        )
+        task_id = create_response.json()["id"]
+        failed_task = wait_for_task(client, task_id)
+        assert failed_task["status"] == "failed"
+        assert failed_task["progress"] == 72
+        assert failed_task["stage"] == "任务失败，可续跑"
+
+        resume_response = client.post(f"/api/tasks/{task_id}/resume")
+        assert resume_response.status_code == 200
+        assert resume_response.json()["status"] == "pending"
+
+        resumed_task = wait_for_task(client, task_id)
+        report = client.get(f"/api/tasks/{task_id}/result").json()
+
+    assert resumed_task["status"] == "succeeded"
+    assert report["title"] == "Resumed report"
+    assert provider.attempts == 2
+    assert provider.seen_checkpoints == [{}, {"custom": {"source_research": "done"}}]
+
+
 def test_generate_task_to_report_with_openai_provider(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

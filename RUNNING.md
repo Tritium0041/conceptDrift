@@ -127,6 +127,27 @@ Provider 模式：
 - `codex`：OpenAI Agents SDK 编排 + direct Codex agent 调研。后端不再调用 GitHub、Hacker News、Product Hunt、Reddit 的现成抓取 API；每个来源由 Codex agent 自己通过浏览器/外部搜索/网络工具调研并返回结构化信号，再由 Orchestrator Agent 汇总结构化报告。
 - `response`：轻量单次 Responses API provider，用于调试 OpenAI-compatible API 连通性或快速生成。
 
+生成模式：
+
+- `guided`：默认模式，围绕用户输入的 `direction` 生成报告。
+- `yolo`：自动探索模式，不依赖用户输入方向；Codex 会先联网检索当前可研究、有意思的开发者产品方向，再继续生成完整报告。
+
+命令行触发 YOLO：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/tasks/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt"],"depth":"standard"}'
+```
+
+失败任务续跑：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/tasks/<task_id>/resume
+```
+
+续跑会复用任务里已保存的 checkpoint；例如 Codex provider 已完成的 YOLO 选题、各来源调研和技术复核不会重复执行，只会从失败后的阶段继续。
+
 Codex agent 可选配置：
 
 ```bash

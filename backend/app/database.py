@@ -36,6 +36,25 @@ def create_session_factory(engine: Engine) -> sessionmaker[Session]:
 
 def init_database(engine: Engine) -> None:
     Base.metadata.create_all(engine)
+    _ensure_sqlite_task_columns(engine)
+
+
+def _ensure_sqlite_task_columns(engine: Engine) -> None:
+    if engine.dialect.name != "sqlite":
+        return
+    with engine.begin() as connection:
+        columns = {
+            row[1]
+            for row in connection.exec_driver_sql("PRAGMA table_info(tasks)").fetchall()
+        }
+        if "mode" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tasks ADD COLUMN mode VARCHAR(20) NOT NULL DEFAULT 'guided'"
+            )
+        if "checkpoint" not in columns:
+            connection.exec_driver_sql(
+                "ALTER TABLE tasks ADD COLUMN checkpoint JSON NOT NULL DEFAULT '{}'"
+            )
 
 
 def mark_interrupted_tasks(session_factory: sessionmaker[Session]) -> int:
@@ -56,4 +75,3 @@ def task_exists(session: Session, task_id: str) -> bool:
 def get_db(session_factory: sessionmaker[Session]) -> Generator[Session, None, None]:
     with session_factory() as session:
         yield session
-

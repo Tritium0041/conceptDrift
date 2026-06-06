@@ -10,9 +10,11 @@ import {
   ReportList,
   ReportListItem,
   Task,
+  TaskMode,
   TaskList,
   apiFetch,
   exportUrl,
+  resumeTask,
   taskEventsUrl
 } from "@/lib/api";
 import { ScoreBar } from "@/components/ScoreBar";
@@ -30,10 +32,16 @@ const DEPTH_OPTIONS = [
   { id: "deep", label: "Deep" }
 ] as const;
 
+const MODE_OPTIONS: Array<{ id: TaskMode; label: string }> = [
+  { id: "guided", label: "定向" },
+  { id: "yolo", label: "YOLO" }
+];
+
 type Depth = (typeof DEPTH_OPTIONS)[number]["id"];
 
 export function Workspace() {
   const [direction, setDirection] = useState("AI code review assistant");
+  const [mode, setMode] = useState<TaskMode>("guided");
   const [sources, setSources] = useState<string[]>(["github_trending", "hackernews", "product_hunt"]);
   const [depth, setDepth] = useState<Depth>("standard");
   const [task, setTask] = useState<Task | null>(null);
@@ -42,6 +50,7 @@ export function Workspace() {
   const [query, setQuery] = useState("");
   const [loadingReports, setLoadingReports] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [resuming, setResuming] = useState(false);
   const [provider, setProvider] = useState<string>("agent");
   const [error, setError] = useState<string | null>(null);
 
@@ -156,13 +165,26 @@ export function Workspace() {
     try {
       const nextTask = await apiFetch<Task>("/api/tasks/generate", {
         method: "POST",
-        body: JSON.stringify({ direction, sources, depth })
+        body: JSON.stringify({ direction: mode === "yolo" ? "" : direction, sources, depth, mode })
       });
       upsertTask(nextTask);
     } catch (event) {
       setError(event instanceof Error ? event.message : "Failed to create task");
     } finally {
       setSubmitting(false);
+    }
+  }
+
+  async function handleResumeTask(taskId: string) {
+    setResuming(true);
+    setError(null);
+    try {
+      const nextTask = await resumeTask(taskId);
+      upsertTask(nextTask);
+    } catch (event) {
+      setError(event instanceof Error ? event.message : "Failed to resume task");
+    } finally {
+      setResuming(false);
     }
   }
 
@@ -194,15 +216,35 @@ export function Workspace() {
           </div>
 
           <form className="space-y-5" onSubmit={handleSubmit}>
-            <label className="block">
-              <span className="mb-2 block text-sm font-medium text-ink">探索方向</span>
-              <textarea
-                className="min-h-28 w-full resize-y rounded-md border border-ink/15 bg-white px-3 py-3 text-base outline-none transition focus:border-moss focus:ring-2 focus:ring-moss/15"
-                value={direction}
-                onChange={(event) => setDirection(event.target.value)}
-                maxLength={300}
-              />
-            </label>
+            <div>
+              <span className="mb-2 block text-sm font-medium text-ink">探索模式</span>
+              <div className="grid grid-cols-2 rounded-md border border-ink/10 bg-mist p-1">
+                {MODE_OPTIONS.map((option) => (
+                  <button
+                    key={option.id}
+                    type="button"
+                    onClick={() => setMode(option.id)}
+                    className={`h-10 rounded px-3 text-sm font-medium transition ${
+                      mode === option.id ? "bg-white text-ink shadow-sm" : "text-ink/60 hover:text-ink"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {mode === "guided" ? (
+              <label className="block">
+                <span className="mb-2 block text-sm font-medium text-ink">探索方向</span>
+                <textarea
+                  className="min-h-28 w-full resize-y rounded-md border border-ink/15 bg-white px-3 py-3 text-base outline-none transition focus:border-moss focus:ring-2 focus:ring-moss/15"
+                  value={direction}
+                  onChange={(event) => setDirection(event.target.value)}
+                  maxLength={300}
+                />
+              </label>
+            ) : null}
 
             <div>
               <span className="mb-2 block text-sm font-medium text-ink">灵感来源</span>
@@ -251,7 +293,7 @@ export function Workspace() {
               className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-md bg-ink px-4 font-semibold text-white transition hover:bg-ink/90 disabled:cursor-not-allowed disabled:opacity-60"
             >
               <Sparkles size={18} aria-hidden="true" />
-              {submitting ? "正在提交" : "生成灵感报告"}
+              {submitting ? "正在提交" : mode === "yolo" ? "YOLO 自动探索" : "生成灵感报告"}
             </button>
           </form>
         </div>
@@ -273,9 +315,21 @@ export function Workspace() {
                 </div>
               </div>
               <div className="text-sm leading-6 text-ink/65">
-                {task.stage} · 来源：{task.sources.join(" / ")} · 深度：{task.depth}
+                {task.stage} · 模式：{task.mode === "yolo" ? "YOLO" : "定向"} · 来源：{task.sources.join(" / ")} · 深度：
+                {task.depth}
               </div>
               {task.error ? <div className="rounded-md bg-coral/10 p-3 text-sm text-coral">{task.error}</div> : null}
+              {task.status === "failed" ? (
+                <button
+                  type="button"
+                  onClick={() => void handleResumeTask(task.id)}
+                  disabled={resuming}
+                  className="inline-flex h-10 items-center gap-2 rounded-md bg-ink px-4 text-sm font-semibold text-white transition hover:bg-ink/90 disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <RefreshCcw size={16} aria-hidden="true" />
+                  {resuming ? "正在续跑" : "续跑任务"}
+                </button>
+              ) : null}
               {task.report_id ? (
                 <Link
                   href={`/reports/${task.report_id}`}

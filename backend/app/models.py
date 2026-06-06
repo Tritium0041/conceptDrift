@@ -49,6 +49,8 @@ class Task(Base, TimestampMixin):
     direction: Mapped[str] = mapped_column(String(300))
     sources: Mapped[list[str]] = mapped_column(JSON, default=list)
     depth: Mapped[str] = mapped_column(String(20), default="standard")
+    mode: Mapped[str] = mapped_column(String(20), default="guided")
+    checkpoint: Mapped[dict] = mapped_column(JSON, default=dict)
     status: Mapped[str] = mapped_column(String(20), index=True, default="pending")
     progress: Mapped[int] = mapped_column(Integer, default=0)
     stage: Mapped[str] = mapped_column(String(120), default="等待执行")
@@ -71,4 +73,3 @@ class SourceItem(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
     report: Mapped[Report] = relationship(back_populates="sources", lazy="selectin")
-

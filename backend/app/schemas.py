@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -13,6 +13,8 @@ class GenerateTaskRequest(BaseModel):
     direction: str = Field(default="随机开发者工具灵感", max_length=300)
     sources: list[str] = Field(default_factory=lambda: DEFAULT_SOURCES.copy(), min_length=1)
     depth: Literal["quick", "standard", "deep"] = "standard"
+    mode: Literal["guided", "yolo"] = "guided"
+    checkpoint: dict[str, Any] = Field(default_factory=dict, exclude=True)
 
 
 class TaskOut(BaseModel):
@@ -20,6 +22,7 @@ class TaskOut(BaseModel):
     direction: str
     sources: list[str]
     depth: str
+    mode: str
     status: str
     progress: int
     stage: str

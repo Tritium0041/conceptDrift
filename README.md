@@ -39,6 +39,11 @@ Provider modes:
 - `codex`: OpenAI Agents SDK workflow plus direct Codex research threads. Codex researches external signals itself through browser/web-search/network tools, then an orchestrator agent streams the structured report.
 - `response`: lightweight single Responses API call.
 
+Generation modes:
+
+- `guided`: default mode. The report is generated around the submitted `direction`.
+- `yolo`: autonomous exploration mode. The agent does not require a user direction; Codex first searches current public web signals, selects an interesting research direction, then runs the normal multi-source report pipeline.
+
 Credentials:
 
 - OpenAI uses `OPENAI_API_KEY`; there is no separate AK/SK pair.
@@ -65,6 +70,7 @@ cd frontend && npm run lint && npm run build
 ## API
 
 - `POST /api/tasks/generate`
+- `POST /api/tasks/{task_id}/resume`
 - `GET /api/tasks/{task_id}`
 - `GET /api/tasks/{task_id}/events`
 - `GET /api/tasks/{task_id}/result`
@@ -74,3 +80,17 @@ cd frontend && npm run lint && npm run build
 - `GET /api/reports/{report_id}`
 - `GET /api/reports/{report_id}/export?format=markdown|pdf`
 - `GET /api/health`
+
+Example YOLO request:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/tasks/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt"],"depth":"standard"}'
+```
+
+Resume a failed task without losing completed research checkpoints:
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/tasks/<task_id>/resume
+```

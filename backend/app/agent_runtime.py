@@ -146,7 +146,7 @@ class CodexResearchRuntime:
                 sandbox_mode="read-only",
                 working_directory=self._working_directory(),
                 skip_git_repo_check=True,
-                model_reasoning_effort="medium",
+                model_reasoning_effort="xhigh",
                 network_access_enabled=self._config.network_access_enabled,
                 web_search_mode=self._web_search_mode(),
                 approval_policy="never",

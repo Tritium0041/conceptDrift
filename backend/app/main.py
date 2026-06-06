@@ -104,6 +104,28 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         await queue.enqueue(task.id)
         return task
 
+    @app.post("/api/tasks/{task_id}/resume", response_model=TaskOut)
+    async def resume_task(
+        task_id: str,
+        session: Session = Depends(db_dependency),
+    ) -> Task:
+        task = session.get(Task, task_id)
+        if task is None:
+            raise HTTPException(status_code=404, detail="Task not found")
+        if task.status == "succeeded":
+            raise HTTPException(status_code=409, detail="Task already succeeded")
+        if task.status in {"pending", "running"}:
+            return task
+
+        task.status = "pending"
+        task.stage = "等待续跑"
+        task.error = None
+        task.progress = max(task.progress, 5)
+        session.commit()
+        session.refresh(task)
+        await queue.enqueue(task.id)
+        return task
+
     @app.get("/api/tasks", response_model=TaskListOut)
     def list_tasks(
         status: str | None = Query(default=None, max_length=40),
