@@ -1,14 +1,15 @@
 # ConceptDrift 运行文档
 
-本文档说明如何在本地把 ConceptDrift 跑起来。项目是前后端分离结构：
+本文档说明如何在本地启动、配置、验证和排障 ConceptDrift。当前项目是前后端分离结构：
 
-- 后端：`backend/`，Python 3.12 + FastAPI + SQLite，使用 `uv` 管理依赖。
-- 前端：`frontend/`，Next.js + TypeScript + Tailwind CSS，使用 `npm` 管理依赖。
-- 默认 Agent Provider 是 `mock`，不需要配置 API Key 就可以生成模拟报告；也可以切换到 OpenAI Agents SDK 或 direct Codex agent provider。
+- 后端：`backend/`，Python 3.12 + FastAPI + SQLAlchemy + SQLite，使用 `uv` 管理依赖。
+- 前端：`frontend/`，Next.js App Router + React + TypeScript + Tailwind CSS，使用 `npm` 管理依赖。
+- 任务执行：FastAPI 进程内 `asyncio.Queue` worker，前端通过 SSE 获取任务状态。
+- 默认 provider：`mock`，不需要 API key，可直接生成本地模拟报告。
 
 ## 1. 环境准备
 
-先确认本机有这些工具：
+确认本机有这些工具：
 
 ```bash
 python3 --version
@@ -19,12 +20,12 @@ npm -v
 
 推荐版本：
 
-- Python：`3.12` 或更高
+- Python：`3.12`
 - Node.js：`22` 或更高
 - npm：`10` 或更高
 - uv：任意较新版本
 
-如果没有 `uv`，可以安装：
+如果没有 `uv`：
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -32,7 +33,7 @@ curl -LsSf https://astral.sh/uv/install.sh | sh
 
 ## 2. 启动后端
 
-打开一个终端，进入后端目录：
+打开一个终端：
 
 ```bash
 cd /Users/yuhaichuan/Documents/conceptDrift/backend
@@ -46,27 +47,29 @@ uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
 http://127.0.0.1:8000
 ```
 
-可以用健康检查确认：
+健康检查：
 
 ```bash
 curl http://127.0.0.1:8000/api/health
 ```
 
-正常返回：
+默认返回类似：
 
 ```json
 {"status":"ok","provider":"mock","database":"sqlite"}
 ```
 
-后端第一次启动时会自动创建 SQLite 数据库：
+后端第一次启动会自动创建数据库：
 
 ```text
 backend/data/conceptdrift.sqlite3
 ```
 
+启动时如果发现上次服务中断留下的 `pending` 或 `running` 任务，后端会把它们标记为失败，并显示“服务重启导致任务中断”。这些任务可以在前端或 API 中续跑。
+
 ## 3. 启动前端
 
-再打开一个新的终端，进入前端目录：
+再打开一个新终端：
 
 ```bash
 cd /Users/yuhaichuan/Documents/conceptDrift/frontend
@@ -74,33 +77,30 @@ npm install
 npm run dev -- --hostname 127.0.0.1 --port 3000
 ```
 
-启动成功后，浏览器打开：
+浏览器打开：
 
 ```text
 http://127.0.0.1:3000
 ```
 
-默认前端会请求：
+默认前端请求：
 
 ```text
 http://127.0.0.1:8000
 ```
 
-所以需要先保持后端运行。
+所以需要保持后端运行。
 
-## 4. 环境变量
+## 4. 配置文件
 
-默认情况下不用配置环境变量，项目会用 mock provider 和本地 SQLite。
+根目录 `.env.example` 是完整示例。实际本地运行时，建议按服务拆分：
 
-也可以打开前端配置页：
+- 后端变量放在 `backend/.env`。
+- 前端变量放在 `frontend/.env.local`。
 
-```text
-http://127.0.0.1:3000/settings
-```
+后端从 `backend/` 目录启动时会读取当前目录下的 `.env`。配置页默认也会写入 `backend/.env`。
 
-配置页保存后会写入 `backend/.env`，并让后续新任务立即使用新 provider。OpenAI key 不会被接口明文回传，页面只显示 masked 值。
-
-如果需要自定义后端配置，可以在 `backend/.env` 中设置：
+最小后端配置：
 
 ```bash
 CONCEPTDRIFT_DATABASE_URL=sqlite:///./data/conceptdrift.sqlite3
@@ -108,29 +108,100 @@ CONCEPTDRIFT_AGENT_PROVIDER=mock
 CONCEPTDRIFT_CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
 ```
 
-使用 Codex provider 时，把 provider 改成 `codex`，并设置 API Key：
+前端连接其他后端地址时，在 `frontend/.env.local` 中设置：
 
 ```bash
-CONCEPTDRIFT_AGENT_PROVIDER=codex
-OPENAI_API_KEY=sk-...
-OPENAI_MODEL=gpt-5
-OPENAI_BASE_URL=https://api.openai.com/v1
-OPENAI_TIMEOUT_SECONDS=90
-CONCEPTDRIFT_CODEX_AGENT_TIMEOUT_SECONDS=120
-CONCEPTDRIFT_CODEX_AGENT_NETWORK_ENABLED=true
-CONCEPTDRIFT_CODEX_AGENT_WEB_SEARCH_MODE=live
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
 ```
 
-Provider 模式：
+## 5. Provider 模式
 
-- `mock`：本地模拟报告，不需要 API Key。
-- `codex`：OpenAI Agents SDK 编排 + direct Codex agent 调研。后端不再调用 GitHub、Hacker News、Product Hunt、Reddit 的现成抓取 API；每个来源由 Codex agent 自己通过浏览器/外部搜索/网络工具调研并返回结构化信号，再由 Orchestrator Agent 汇总结构化报告。
-- `response`：轻量单次 Responses API provider，用于调试 OpenAI-compatible API 连通性或快速生成。
+当前支持三种 provider：
 
-生成模式：
+| Provider | 说明 | 是否需要 `OPENAI_API_KEY` |
+| :--- | :--- | :--- |
+| `mock` | 本地确定性报告，适合开发、演示和测试 | 否 |
+| `response` | 单次 OpenAI-compatible Responses API 调用 | 是 |
+| `codex` | direct Codex threads 负责自动选题、来源调研、技术复核和最终汇总 | 是 |
 
-- `guided`：默认模式，围绕用户输入的 `direction` 生成报告。
-- `yolo`：自动探索模式，不依赖用户输入方向；Codex 会先联网检索当前可研究、有意思的开发者产品方向，再继续生成完整报告。
+### 使用配置页
+
+打开：
+
+```text
+http://127.0.0.1:3000/settings
+```
+
+配置页可以修改：
+
+- Provider：`mock`、`response`、`codex`
+- OpenAI API key
+- OpenAI Base URL
+- Model
+- OpenAI timeout
+- OpenAI tracing disabled
+- Codex agent timeout
+- Codex network enabled
+- Codex web search mode：`live`、`cached`、`disabled`
+
+保存后，后端会更新内存中的 provider，并把配置写入 `backend/.env`。OpenAI key 是 write-only：接口不会明文回传，只返回是否已配置和 masked 值。
+
+### 使用 `response` provider
+
+```bash
+cd /Users/yuhaichuan/Documents/conceptDrift/backend
+export CONCEPTDRIFT_AGENT_PROVIDER=response
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-5
+export OPENAI_BASE_URL=https://api.openai.com/v1
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+`response` provider 会调用 `${OPENAI_BASE_URL}/responses`。如果 Base URL 以 `/v1` 结尾，会自动补成 `/v1/responses`。
+
+### 使用 `codex` provider
+
+```bash
+cd /Users/yuhaichuan/Documents/conceptDrift/backend
+export CONCEPTDRIFT_AGENT_PROVIDER=codex
+export OPENAI_API_KEY=sk-...
+export OPENAI_MODEL=gpt-5
+export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_TIMEOUT_SECONDS=90
+export CONCEPTDRIFT_CODEX_AGENT_TIMEOUT_SECONDS=120
+export CONCEPTDRIFT_CODEX_AGENT_NETWORK_ENABLED=true
+export CONCEPTDRIFT_CODEX_AGENT_WEB_SEARCH_MODE=live
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+`codex` provider 使用 `openai-agents` experimental Codex SDK direct thread 路径。GitHub、Hacker News、Product Hunt、Reddit 不由后端抓取 API 采集，而是作为 Codex 的公开调研目标。
+
+Codex 线程当前配置：
+
+- `sandbox_mode="read-only"`
+- `approval_policy="never"`
+- `skip_git_repo_check=True`
+- `network_access_enabled` 由 `CONCEPTDRIFT_CODEX_AGENT_NETWORK_ENABLED` 控制
+- `web_search_mode` 由 `CONCEPTDRIFT_CODEX_AGENT_WEB_SEARCH_MODE` 控制
+
+## 6. 使用流程
+
+### 定向模式
+
+1. 打开工作台。
+2. 选择“定向”。
+3. 输入探索方向，例如 `AI code review assistant`。
+4. 选择灵感来源和调研深度。
+5. 点击“生成灵感报告”。
+
+### YOLO 模式
+
+1. 打开工作台。
+2. 选择“YOLO”。
+3. 选择灵感来源和调研深度。
+4. 点击“YOLO 自动探索”。
+
+YOLO 模式会先自动发现一个具体方向，再进入来源调研、技术复核和报告汇总。
 
 命令行触发 YOLO：
 
@@ -140,39 +211,73 @@ curl -X POST http://127.0.0.1:8000/api/tasks/generate \
   -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt"],"depth":"standard"}'
 ```
 
-失败任务续跑：
+### 查看任务和报告
+
+- 工作台左侧显示当前任务和最近任务。
+- 任务执行时前端优先使用 SSE 订阅 `/api/tasks/{task_id}/events`；如果浏览器不支持 `EventSource`，会退回轮询。
+- 任务成功后会生成报告，可在历史报告列表或详情页查看。
+- 报告详情页支持 Markdown 和 PDF 导出。
+
+### 续跑失败任务
+
+前端失败任务会显示“续跑任务”按钮。也可以用 API：
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/tasks/<task_id>/resume
 ```
 
-续跑会复用任务里已保存的 checkpoint；例如 Codex provider 已完成的 YOLO 选题、各来源调研和技术复核不会重复执行，只会从失败后的阶段继续。
+续跑会复用任务 checkpoint。`response` provider 会复用已保存的请求 payload 或模型输出；`codex` provider 会复用已完成的 YOLO 选题、来源调研、技术复核和最终汇总文本。
 
-Codex agent 可选配置：
+## 7. API
+
+| Method | Path | 说明 |
+| :--- | :--- | :--- |
+| `GET` | `/api/health` | 健康检查，返回 provider 和数据库类型 |
+| `GET` | `/api/config` | 读取运行配置，密钥只返回 masked 状态 |
+| `PUT` | `/api/config` | 更新运行配置并写入 `.env` |
+| `POST` | `/api/tasks/generate` | 创建生成任务 |
+| `POST` | `/api/tasks/{task_id}/resume` | 续跑失败或中断任务 |
+| `GET` | `/api/tasks` | 任务列表，支持 `status`、`limit`、`offset` |
+| `GET` | `/api/tasks/{task_id}` | 任务详情 |
+| `GET` | `/api/tasks/{task_id}/events` | SSE 任务事件 |
+| `GET` | `/api/tasks/{task_id}/result` | 获取任务对应报告 |
+| `GET` | `/api/reports` | 报告列表，支持 `q`、`limit`、`offset` |
+| `GET` | `/api/reports/{report_id}` | 报告详情 |
+| `GET` | `/api/reports/{report_id}/export?format=markdown|pdf` | 导出报告 |
+
+创建定向任务：
 
 ```bash
-CONCEPTDRIFT_CODEX_AGENT_TIMEOUT_SECONDS=120
-CONCEPTDRIFT_CODEX_AGENT_NETWORK_ENABLED=true
-CONCEPTDRIFT_CODEX_AGENT_WEB_SEARCH_MODE=live
+curl -X POST http://127.0.0.1:8000/api/tasks/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"direction":"AI code review assistant","sources":["github_trending","hackernews"],"depth":"standard","mode":"guided"}'
 ```
 
-未设置 `OPENAI_API_KEY` 时，所有真实 OpenAI provider 都会失败并返回明确错误。
-
-密钥说明：
-
-- OpenAI 只需要 `OPENAI_API_KEY`，不是 AK/SK 成对配置。
-- Codex agent 调研走 `openai-agents` 的 experimental Codex SDK direct thread 路径。
-- GitHub、Hacker News、Product Hunt、Reddit 不再由后端公开接口抓取，而是作为 Codex 调研目标。
-
-如果前端要连接其他后端地址，可以在 `frontend/.env.local` 中设置：
+查询最近任务：
 
 ```bash
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8000
+curl 'http://127.0.0.1:8000/api/tasks?limit=8'
 ```
 
-根目录的 `.env.example` 是配置示例。因为后端和前端分别从各自目录启动，实际本地运行时建议把对应变量放到 `backend/.env` 或 `frontend/.env.local`。
+搜索报告：
 
-## 5. 验证命令
+```bash
+curl 'http://127.0.0.1:8000/api/reports?q=CLI'
+```
+
+导出 Markdown：
+
+```bash
+curl -L 'http://127.0.0.1:8000/api/reports/<report_id>/export?format=markdown' -o report.md
+```
+
+导出 PDF：
+
+```bash
+curl -L 'http://127.0.0.1:8000/api/reports/<report_id>/export?format=pdf' -o report.pdf
+```
+
+## 8. 验证命令
 
 后端测试：
 
@@ -195,17 +300,11 @@ cd /Users/yuhaichuan/Documents/conceptDrift/frontend
 npm run build
 ```
 
-本地已经验证通过的结果：
-
-- `uv run pytest`：`22 passed`
-- `npm run lint`：通过
-- `npm run build`：通过，Next.js 构建成功
-
-## 6. 常见问题
+## 9. 常见问题
 
 ### 前端页面打不开
 
-确认前端 dev server 还在运行：
+确认前端 dev server 正在运行：
 
 ```bash
 cd /Users/yuhaichuan/Documents/conceptDrift/frontend
@@ -228,35 +327,49 @@ curl http://127.0.0.1:8000/api/health
 
 如果返回正常，再确认 `frontend/.env.local` 中的 `NEXT_PUBLIC_API_BASE_URL` 是否指向同一个后端地址。
 
-### 端口被占用
+### 切换前端端口
 
-后端换端口，例如 `8010`：
-
-```bash
-cd /Users/yuhaichuan/Documents/conceptDrift/backend
-uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8010
-```
-
-同时更新前端环境变量：
-
-```bash
-NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8010
-```
-
-前端换端口，例如 `3010`：
+例如改到 `3010`：
 
 ```bash
 cd /Users/yuhaichuan/Documents/conceptDrift/frontend
 npm run dev -- --hostname 127.0.0.1 --port 3010
 ```
 
-如果后端 CORS 没有包含新前端地址，需要在 `backend/.env` 里更新：
+如果后端 CORS 没有包含新前端地址，在 `backend/.env` 中更新：
 
 ```bash
 CONCEPTDRIFT_CORS_ORIGINS=http://localhost:3010,http://127.0.0.1:3010
 ```
 
 然后重启后端。
+
+### 切换后端端口
+
+例如改到 `8010`：
+
+```bash
+cd /Users/yuhaichuan/Documents/conceptDrift/backend
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8010
+```
+
+同时在 `frontend/.env.local` 中更新：
+
+```bash
+NEXT_PUBLIC_API_BASE_URL=http://127.0.0.1:8010
+```
+
+然后重启前端。
+
+### 真实 provider 报错缺少 API key
+
+`response` 和 `codex` 都需要：
+
+```bash
+OPENAI_API_KEY=sk-...
+```
+
+如果使用设置页保存 key，后端会写入 `backend/.env`。保存后新任务会立即使用新的 provider。
 
 ### 想清空本地数据
 
@@ -268,7 +381,7 @@ rm /Users/yuhaichuan/Documents/conceptDrift/backend/data/conceptdrift.sqlite3
 
 下次启动后端时会重新创建数据库。
 
-## 7. 最短启动流程
+## 10. 最短启动流程
 
 后端终端：
 
