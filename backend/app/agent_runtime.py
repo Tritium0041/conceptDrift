@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any, Protocol
 
 
@@ -140,32 +142,38 @@ class CodexResearchRuntime:
                 base_url=self._config.base_url,
             )
         )
-        thread = codex.start_thread(
-            ThreadOptions(
-                model=self._config.model,
-                sandbox_mode="read-only",
-                working_directory=self._working_directory(),
-                skip_git_repo_check=True,
-                model_reasoning_effort="xhigh",
-                network_access_enabled=self._config.network_access_enabled,
-                web_search_mode=self._web_search_mode(),
-                approval_policy="never",
+        with self._working_directory() as working_directory:
+            thread = codex.start_thread(
+                ThreadOptions(
+                    model=self._config.model,
+                    sandbox_mode="read-only",
+                    working_directory=working_directory,
+                    skip_git_repo_check=True,
+                    model_reasoning_effort="xhigh",
+                    network_access_enabled=self._config.network_access_enabled,
+                    web_search_mode=self._web_search_mode(),
+                    approval_policy="never",
+                )
             )
-        )
-        turn = await thread.run(
-            prompt,
-            TurnOptions(
-                output_schema=output_schema,
-                idle_timeout_seconds=self._config.timeout_seconds,
-            ),
-        )
+            turn = await thread.run(
+                prompt,
+                TurnOptions(
+                    output_schema=output_schema,
+                    idle_timeout_seconds=self._config.timeout_seconds,
+                ),
+            )
         logger.info("ConceptDrift Codex research run completed")
         return turn.final_response
 
-    def _working_directory(self) -> str:
+    @contextmanager
+    def _working_directory(self) -> Iterator[str]:
         if self._config.working_directory:
-            return self._config.working_directory
-        return str(Path(__file__).resolve().parents[2])
+            path = Path(self._config.working_directory).expanduser()
+            path.mkdir(parents=True, exist_ok=True)
+            yield str(path)
+            return
+        with TemporaryDirectory(prefix="conceptdrift-codex-") as workdir:
+            yield workdir
 
     def _web_search_mode(self) -> str:
         if self._config.web_search_mode in {"disabled", "cached", "live"}:

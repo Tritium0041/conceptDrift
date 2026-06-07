@@ -171,6 +171,8 @@ async def test_openai_agents_provider_runs_parallel_codex_research() -> None:
     assert "Use your own browser/web-search/network tools" in research_runtime.prompts[0]
     orchestrator_prompt = json.loads(research_runtime.prompts[3])
     assert orchestrator_prompt["role"] == "Codex Orchestrator Agent"
+    assert "ConceptDrift is only the local report-generation app" in orchestrator_prompt["task"]
+    assert "do not use ConceptDrift as the report topic" in orchestrator_prompt["requirements"][1]
 
 
 @pytest.mark.asyncio
@@ -230,6 +232,7 @@ async def test_openai_agents_provider_yolo_discovers_direction_before_research()
     assert "Do not ask the user" in discovery_prompt["task"]
     assert source_prompt["direction"] == "Localhost OAuth callback debugger"
     assert orchestrator_prompt["input"]["request_mode"] == "yolo"
+    assert "ConceptDrift is only the local report-generation app" in orchestrator_prompt["task"]
     assert runtime.calls == 0
 
 

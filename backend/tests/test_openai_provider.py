@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
+from app.agent_runtime import CodexResearchConfig, CodexResearchRuntime
 from app.config import Settings
 from app.providers import (
     OpenAIAgentsProvider,
@@ -29,6 +31,42 @@ def _config(**overrides: object) -> OpenAIProviderConfig:
     }
     values.update(overrides)
     return OpenAIProviderConfig(**values)
+
+
+def _codex_config(**overrides: object) -> CodexResearchConfig:
+    values = {
+        "api_key": "sk-test",
+        "base_url": "https://api.openai.com/v1",
+        "model": "gpt-test",
+        "timeout_seconds": 30.0,
+    }
+    values.update(overrides)
+    return CodexResearchConfig(**values)
+
+
+def test_codex_research_runtime_uses_isolated_workdir_by_default() -> None:
+    runtime = CodexResearchRuntime(_codex_config())
+    repo_root = Path(__file__).resolve().parents[2]
+
+    with runtime._working_directory() as workdir:
+        workdir_path = Path(workdir)
+        assert workdir_path.exists()
+        assert workdir_path.name.startswith("conceptdrift-codex-")
+        assert workdir_path != repo_root
+        assert not (workdir_path / "backend").exists()
+
+    assert not workdir_path.exists()
+
+
+def test_codex_research_runtime_allows_explicit_workdir(tmp_path: Path) -> None:
+    custom_workdir = tmp_path / "codex-workdir"
+    runtime = CodexResearchRuntime(_codex_config(working_directory=str(custom_workdir)))
+
+    with runtime._working_directory() as workdir:
+        assert Path(workdir) == custom_workdir
+        assert custom_workdir.exists()
+
+    assert custom_workdir.exists()
 
 
 @pytest.mark.asyncio
@@ -127,10 +165,14 @@ async def test_openai_provider_request_payload_supports_yolo_mode() -> None:
     )
 
     sent_body = json.loads(requests[0].content)
+    system_content = sent_body["input"][0]["content"]
     user_content = sent_body["input"][1]["content"]
     assert report.title == "Localhost OAuth Callback Debugger"
+    assert "ConceptDrift 是生成报告的本地应用名" in system_content
+    assert "不要把 ConceptDrift 当作被调研产品" in system_content
     assert "探索模式：YOLO 自动选题" in user_content
     assert "不要要求用户补充方向" in user_content
+    assert "不要把 ConceptDrift 当作被调研产品" in user_content
     assert "探索方向：" not in user_content
 
 

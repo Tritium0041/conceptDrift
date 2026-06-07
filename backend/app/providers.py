@@ -661,7 +661,7 @@ class OpenAIAgentsProvider:
                     "Autonomously discover one interesting, researchable developer-product "
                     "direction. Use your own browser/web-search/network tools to scan current "
                     "public web signals. Do not ask the user for a direction and do not depend "
-                    "on ConceptDrift backend scraping APIs."
+                    "on this application's backend scraping APIs."
                 ),
                 "optional_seed": seed if seed and seed != "YOLO 自动探索" else "",
                 "depth": request.depth,
@@ -697,7 +697,7 @@ class OpenAIAgentsProvider:
                 "language": "zh-CN",
                 "task": (
                     "Use your own browser/web-search/network tools to research current public "
-                    "signals. Do not call or rely on ConceptDrift backend source-scraping APIs. "
+                    "signals. Do not call or rely on this application's backend source-scraping APIs. "
                     "Prefer primary URLs and cite only pages you actually inspected."
                 ),
                 "direction": direction,
@@ -746,15 +746,22 @@ class OpenAIAgentsProvider:
                 "role": "Codex Orchestrator Agent",
                 "language": "zh-CN",
                 "task": (
-                    "Synthesize the final ConceptDrift developer inspiration report using the "
-                    "provided Codex research snapshots, source analyses, and technical review. "
-                    "Do not call ConceptDrift backend scraping APIs. Treat source_snapshots as "
-                    "the evidence base and only use browser/web-search tools if a current fact "
-                    "is materially necessary."
+                    "Synthesize the final developer inspiration report for the opportunity in "
+                    "input.direction using the provided Codex research snapshots, source analyses, "
+                    "and technical review. ConceptDrift is only the local report-generation app, "
+                    "not the product, opportunity, startup, or project being evaluated unless the "
+                    "user explicitly supplied it as input.direction. Do not call this application's "
+                    "backend scraping APIs. Treat source_snapshots as the evidence base and only "
+                    "use browser/web-search tools if a current fact is materially necessary."
                 ),
                 "input": payload,
                 "requirements": [
                     "Return only JSON matching the supplied output schema.",
+                    (
+                        "title, summary, markdown, tags, and sources must center on input.direction; "
+                        "do not use ConceptDrift as the report topic, product name, source, or tag "
+                        "unless input.direction explicitly asks for it."
+                    ),
                     (
                         "markdown must be a complete Markdown report with 摘要、核心概念、"
                         "技术可行性、市场新颖性、商业潜力、灵感来源、"
@@ -909,8 +916,12 @@ class OpenAIAgentsProvider:
 
     def _orchestrator_instructions(self) -> str:
         return (
-            "你是 ConceptDrift 的中心编排 Agent。你必须综合 source_analyses、"
+            "你是开发者灵感报告的中心编排 Agent。ConceptDrift 只是生成报告的本地应用名，"
+            "不是被调研的产品、机会、创业项目或开源项目，除非 direction 明确要求调研它。"
+            "你必须综合 source_analyses、"
             "source_snapshots 和 codex_technical_analysis，生成最终开发者灵感报告。"
+            "title、summary、markdown、tags 和 sources 必须围绕 direction 字段里的主题，"
+            "不要把 ConceptDrift 当作报告主题、产品名、来源或标签。"
             "只返回 JSON，不要 Markdown code fence，不要解释。JSON 必须符合输入中的 "
             "required_json_schema。markdown 字段内部必须是完整 Markdown 报告，并包含："
             "摘要、核心概念、技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。"
@@ -990,11 +1001,12 @@ class OpenAIResponsesProvider:
                 "要求：\n"
                 "1. 先自主选择一个当前值得研究的具体开发者产品方向，不要要求用户补充方向。\n"
                 "2. title、summary、markdown 都必须围绕你选择出的方向。\n"
-                "3. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
+                "3. 不要把 ConceptDrift 当作被调研产品、报告主题、来源或标签。\n"
+                "4. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
                 "技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。\n"
-                "4. 在摘要或灵感来源中说明 YOLO 选择该方向的理由。\n"
-                "5. scores 的三个分数必须是 0-100 的整数。\n"
-                "6. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
+                "5. 在摘要或灵感来源中说明 YOLO 选择该方向的理由。\n"
+                "6. scores 的三个分数必须是 0-100 的整数。\n"
+                "7. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
                 "给出可追溯的公开主页 URL，并在 summary 中说明它代表的信号类型。"
             )
         else:
@@ -1006,10 +1018,11 @@ class OpenAIResponsesProvider:
                 "要求：\n"
                 "1. title 使用中文或中英混合，明确项目方向。\n"
                 "2. summary 用 2-4 句话说明机会点。\n"
-                "3. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
+                "3. 不要把 ConceptDrift 当作被调研产品、报告主题、来源或标签。\n"
+                "4. markdown 生成完整 Markdown 报告，必须包含摘要、核心概念、"
                 "技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。\n"
-                "4. scores 的三个分数必须是 0-100 的整数。\n"
-                "5. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
+                "5. scores 的三个分数必须是 0-100 的整数。\n"
+                "6. sources 至少覆盖用户选择的信号源；无法实时访问某来源时，"
                 "给出可追溯的公开主页 URL，并在 summary 中说明它代表的信号类型。"
             )
 
@@ -1019,9 +1032,12 @@ class OpenAIResponsesProvider:
                 {
                     "role": "system",
                     "content": (
-                        "你是 ConceptDrift 的开发者灵感调研 Agent。"
+                        "你是开发者灵感调研 Agent。ConceptDrift 是生成报告的本地应用名，"
+                        "不是被调研产品、机会、创业项目或开源项目，除非用户方向明确要求调研它。"
                         "你必须根据请求模式生成可执行的项目灵感报告；"
                         "guided 模式围绕用户方向，yolo 模式先自主选择方向。"
+                        "title、summary、markdown、tags 和 sources 必须围绕实际调研方向，"
+                        "不要把 ConceptDrift 当作被调研产品、报告主题、来源或标签。"
                         "只输出符合 JSON schema 的结构化数据。"
                     ),
                 },
