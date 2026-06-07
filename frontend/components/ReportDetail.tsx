@@ -3,14 +3,26 @@
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import ReactMarkdown from "react-markdown";
-import { ArrowLeft, Download, ExternalLink, Loader2 } from "lucide-react";
+import { ArrowLeft, Check, Copy, Download, ExternalLink, Loader2 } from "lucide-react";
 
 import { Report, apiFetch, exportUrl } from "@/lib/api";
 import { ScoreBar } from "@/components/ScoreBar";
 
+type CopyStatus = "idle" | "copying" | "copied" | "failed";
+
+const COPY_STATUS_LABELS: Record<CopyStatus, string> = {
+  idle: "复制 Markdown",
+  copying: "正在复制",
+  copied: "已复制",
+  failed: "复制失败"
+};
+
+const COPY_RESET_DELAY_MS = 1600;
+
 export function ReportDetail({ reportId }: { reportId: number }) {
   const [report, setReport] = useState<Report | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [copyStatus, setCopyStatus] = useState<CopyStatus>("idle");
 
   useEffect(() => {
     let alive = true;
@@ -31,6 +43,27 @@ export function ReportDetail({ reportId }: { reportId: number }) {
       alive = false;
     };
   }, [reportId]);
+
+  useEffect(() => {
+    if (copyStatus !== "copied" && copyStatus !== "failed") {
+      return;
+    }
+    const timer = window.setTimeout(() => setCopyStatus("idle"), COPY_RESET_DELAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [copyStatus]);
+
+  async function handleCopyMarkdown() {
+    if (!report || copyStatus === "copying") {
+      return;
+    }
+    setCopyStatus("copying");
+    try {
+      await copyMarkdownText(report.markdown);
+      setCopyStatus("copied");
+    } catch {
+      setCopyStatus("failed");
+    }
+  }
 
   if (error) {
     return (
@@ -59,7 +92,20 @@ export function ReportDetail({ reportId }: { reportId: number }) {
             <ArrowLeft size={16} aria-hidden="true" />
             工作台
           </Link>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
+            <button
+              type="button"
+              onClick={() => void handleCopyMarkdown()}
+              disabled={copyStatus === "copying"}
+              className="inline-flex h-10 items-center gap-2 rounded-md border border-ink/10 bg-white px-3 text-sm font-semibold text-ink transition hover:border-moss/40 hover:text-moss disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {copyStatus === "copied" ? (
+                <Check size={16} aria-hidden="true" />
+              ) : (
+                <Copy size={16} aria-hidden="true" />
+              )}
+              {COPY_STATUS_LABELS[copyStatus]}
+            </button>
             <a
               href={exportUrl(report.id, "markdown")}
               className="inline-flex h-10 items-center gap-2 rounded-md bg-mist px-3 text-sm font-semibold text-ink"
@@ -135,3 +181,39 @@ export function ReportDetail({ reportId }: { reportId: number }) {
   );
 }
 
+async function copyMarkdownText(markdown: string) {
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      return;
+    } catch {
+      // Fall through to the textarea fallback for non-secure or restricted contexts.
+    }
+  }
+
+  if (copyMarkdownWithTextarea(markdown)) {
+    return;
+  }
+
+  throw new Error("Clipboard is unavailable");
+}
+
+function copyMarkdownWithTextarea(markdown: string) {
+  const textarea = document.createElement("textarea");
+  textarea.value = markdown;
+  textarea.setAttribute("readonly", "");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  textarea.style.opacity = "0";
+
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    return document.execCommand("copy");
+  } finally {
+    document.body.removeChild(textarea);
+  }
+}
