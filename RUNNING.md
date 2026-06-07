@@ -208,10 +208,10 @@ YOLO 模式会先自动发现一个具体方向，再进入来源调研、技术
 ```bash
 curl -X POST http://127.0.0.1:8000/api/tasks/generate \
   -H 'Content-Type: application/json' \
-  -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt"],"depth":"standard"}'
+  -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt","last30days"],"depth":"standard"}'
 ```
 
-可选：如果使用者希望 Codex 额外调用最近 30 天社区信号，可自行安装 Last30Days skill：
+可选：`last30days` 是 ConceptDrift 支持的 source，但 skill 本体需要使用者自行安装到 Codex，不随代码库提交或自动安装：
 
 ```bash
 python3 "$HOME/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
@@ -219,7 +219,7 @@ python3 "$HOME/.codex/skills/.system/skill-installer/scripts/install-skill-from-
   --path skills/last30days
 ```
 
-安装后重启 Codex，并在探索方向中写明需要调用 `last30days` skill 调查近 30 天信号。ConceptDrift 不把它作为内置 source 存在代码库里。
+安装后重启 Codex。使用 `codex` provider 并选择 `last30days` source 时，Codex 会调用用户本机的 `last30days` skill 调查近 30 天信号；未安装时，该来源只能返回需要安装 skill 的回退说明。
 
 ### 查看任务和报告
 

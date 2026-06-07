@@ -23,6 +23,7 @@ const SOURCE_OPTIONS = [
   { id: "github_trending", label: "GitHub" },
   { id: "hackernews", label: "Hacker News" },
   { id: "product_hunt", label: "Product Hunt" },
+  { id: "last30days", label: "Last30Days" },
   { id: "reddit", label: "Reddit" }
 ];
 
@@ -42,7 +43,7 @@ type Depth = (typeof DEPTH_OPTIONS)[number]["id"];
 export function Workspace() {
   const [direction, setDirection] = useState("AI code review assistant");
   const [mode, setMode] = useState<TaskMode>("guided");
-  const [sources, setSources] = useState<string[]>(["github_trending", "hackernews", "product_hunt"]);
+  const [sources, setSources] = useState<string[]>(["github_trending", "hackernews", "product_hunt", "last30days"]);
   const [depth, setDepth] = useState<Depth>("standard");
   const [task, setTask] = useState<Task | null>(null);
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -248,7 +249,7 @@ export function Workspace() {
 
             <div>
               <span className="mb-2 block text-sm font-medium text-ink">灵感来源</span>
-              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
                 {SOURCE_OPTIONS.map((source) => {
                   const active = sources.includes(source.id);
                   return (

@@ -176,6 +176,35 @@ async def test_openai_agents_provider_runs_parallel_codex_research() -> None:
 
 
 @pytest.mark.asyncio
+async def test_openai_agents_provider_prompts_last30days_skill_source() -> None:
+    runtime = FakeRuntime()
+    research_runtime = FakeResearchRuntime()
+    provider = OpenAIAgentsProvider(
+        _config(),
+        runtime=runtime,
+        research_runtime=research_runtime,
+    )
+
+    await provider.generate(
+        GenerateTaskRequest(
+            direction="developer workflow",
+            sources=["github_trending", "last30days"],
+            depth="standard",
+        ),
+        _progress,
+    )
+
+    source_prompt = json.loads(research_runtime.prompts[1])
+    assert source_prompt["source_target"]["source_id"] == "last30days"
+    assert "user-installed Codex skill `last30days`" in source_prompt["source_target"]["guidance"]
+    assert any(
+        "invoke the user-installed Codex skill `last30days`" in item
+        for item in source_prompt["requirements"]
+    )
+    assert any("must install mvanhorn/last30days-skill" in item for item in source_prompt["requirements"])
+
+
+@pytest.mark.asyncio
 async def test_openai_agents_provider_yolo_discovers_direction_before_research() -> None:
     class YoloResearchRuntime(FakeResearchRuntime):
         async def run(self, prompt: str, output_schema=None) -> str:  # type: ignore[no-untyped-def]

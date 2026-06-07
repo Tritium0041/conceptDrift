@@ -7,6 +7,7 @@ from typing import Any
 SOURCE_LABELS = {
     "github_trending": "GitHub Trending",
     "hackernews": "Hacker News",
+    "last30days": "Last30Days",
     "product_hunt": "Product Hunt",
     "reddit": "Reddit",
 }
@@ -14,6 +15,7 @@ SOURCE_LABELS = {
 SOURCE_HOME_URLS = {
     "github_trending": "https://github.com/trending",
     "hackernews": "https://news.ycombinator.com",
+    "last30days": "https://github.com/mvanhorn/last30days-skill",
     "product_hunt": "https://www.producthunt.com",
     "reddit": "https://www.reddit.com/r/programming",
 }
@@ -26,6 +28,14 @@ SOURCE_RESEARCH_GUIDANCE = {
     "hackernews": (
         "Research recent Hacker News stories and discussions related to the direction. Prefer "
         "news.ycombinator.com item pages and linked primary sources."
+    ),
+    "last30days": (
+        "Use the user-installed Codex skill `last30days` to research what people actually said "
+        "about the direction in the last 30 days across Reddit, X, YouTube, TikTok, Hacker News, "
+        "Polymarket, GitHub, and the public web. Treat the skill output as intermediate evidence, "
+        "then summarize the highest-signal findings into this source result. If the skill is not "
+        "installed in the Codex environment, return a clear fallback signal explaining that setup "
+        "is required."
     ),
     "product_hunt": (
         "Research recent Product Hunt launches and adjacent products related to the direction. "

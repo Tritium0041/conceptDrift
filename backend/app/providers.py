@@ -273,6 +273,7 @@ class MockInspirationProvider:
         labels = {
             "github_trending": "GitHub Trending",
             "hackernews": "Hacker News",
+            "last30days": "Last30Days",
             "product_hunt": "Product Hunt",
             "reddit": "Reddit",
         }
@@ -709,6 +710,13 @@ class OpenAIAgentsProvider:
                     "Each signal summary must explain why it matters for the requested direction.",
                     "analysis must summarize opportunities, noise, risks, and actionable insight.",
                     "If the source has little relevant activity, say so and return the best public fallback URL.",
+                    (
+                        "If source_target.source_id is last30days, invoke the user-installed "
+                        "Codex skill `last30days` for the direction first, use its recent "
+                        "multi-source evidence as your research corpus, and still return only "
+                        "the JSON schema. If the skill is unavailable, return a fallback signal "
+                        "that says the user must install mvanhorn/last30days-skill."
+                    ),
                 ],
             },
             ensure_ascii=False,

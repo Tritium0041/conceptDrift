@@ -6,7 +6,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
-DEFAULT_SOURCES = ["github_trending", "hackernews", "product_hunt"]
+DEFAULT_SOURCES = ["github_trending", "hackernews", "product_hunt", "last30days"]
 
 
 class GenerateTaskRequest(BaseModel):

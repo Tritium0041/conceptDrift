@@ -18,6 +18,16 @@ def test_source_research_target_describes_public_source_without_fetching() -> No
     assert "Research recent GitHub repositories" in target.guidance
 
 
+def test_last30days_target_directs_codex_to_user_installed_skill() -> None:
+    target = build_source_research_target("last30days")
+
+    assert target.source_id == "last30days"
+    assert target.source == "Last30Days"
+    assert target.url == "https://github.com/mvanhorn/last30days-skill"
+    assert "user-installed Codex skill `last30days`" in target.guidance
+    assert "setup is required" in target.guidance
+
+
 def test_unknown_source_gets_safe_defaults() -> None:
     target = build_source_research_target("indie_blogs")
 
