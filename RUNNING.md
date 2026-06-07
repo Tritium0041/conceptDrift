@@ -211,6 +211,16 @@ curl -X POST http://127.0.0.1:8000/api/tasks/generate \
   -d '{"mode":"yolo","direction":"","sources":["github_trending","hackernews","product_hunt"],"depth":"standard"}'
 ```
 
+可选：如果使用者希望 Codex 额外调用最近 30 天社区信号，可自行安装 Last30Days skill：
+
+```bash
+python3 "$HOME/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
+  --repo mvanhorn/last30days-skill \
+  --path skills/last30days
+```
+
+安装后重启 Codex，并在探索方向中写明需要调用 `last30days` skill 调查近 30 天信号。ConceptDrift 不把它作为内置 source 存在代码库里。
+
 ### 查看任务和报告
 
 - 工作台左侧显示当前任务和最近任务。

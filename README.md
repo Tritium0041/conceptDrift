@@ -64,6 +64,18 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 
 `codex` provider 不使用后端内置站点抓取器。GitHub、Hacker News、Product Hunt、Reddit 是 Codex 的调研目标，Codex 通过自己的浏览器、外部搜索或网络能力检查公开页面并返回结构化信号。
 
+### 可选：Last30Days Codex Skill
+
+如果希望 Codex 在调研时额外参考最近 30 天的 Reddit、X、YouTube、Hacker News、Polymarket、GitHub 和公开 Web 信号，可以让使用者自行安装 [mvanhorn/last30days-skill](https://github.com/mvanhorn/last30days-skill)：
+
+```bash
+python3 "$HOME/.codex/skills/.system/skill-installer/scripts/install-skill-from-github.py" \
+  --repo mvanhorn/last30days-skill \
+  --path skills/last30days
+```
+
+安装后重启 Codex。在使用 `codex` provider 生成报告时，可以在探索方向里明确要求 Codex 调用 `last30days` skill 做近 30 天信号调查。这个 skill 是用户本机 Codex 能力，不作为 ConceptDrift 应用内置数据源提交到代码库。
+
 可在前端 [http://127.0.0.1:3000/settings](http://127.0.0.1:3000/settings) 修改 provider 和模型配置。API key 不会被配置接口明文回传。
 
 ## API 概览
