@@ -236,7 +236,7 @@ python3 "$HOME/.codex/skills/.system/skill-installer/scripts/install-skill-from-
 curl -X POST http://127.0.0.1:8000/api/tasks/<task_id>/resume
 ```
 
-续跑会复用任务 checkpoint。`response` provider 会复用已保存的请求 payload 或模型输出；`codex` provider 会复用已完成的 YOLO 选题、来源调研、技术复核和最终汇总文本。
+续跑会复用任务 checkpoint。`response` provider 会复用已保存的请求 payload 或模型输出；`codex` provider 会复用已完成的 YOLO 选题、来源调研、技术复核、同类产品侦查和最终汇总文本。
 
 ## 7. API
 

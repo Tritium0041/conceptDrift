@@ -120,6 +120,22 @@ class _YoloDiscoveryPayload(BaseModel):
     rejected_directions: list[str]
 
 
+class _CompetitorProductPayload(BaseModel):
+    name: str
+    url: str
+    positioning: str
+    overlap: str
+    difference: str
+    threat_level: int
+
+
+class _CompetitorResearchPayload(BaseModel):
+    analysis: str
+    products: list[_CompetitorProductPayload]
+    differentiation_strategy: list[str]
+    uniqueness_angle: str
+
+
 OPENAI_REPORT_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "additionalProperties": False,
@@ -209,6 +225,40 @@ SOURCE_RESEARCH_JSON_SCHEMA: dict[str, Any] = {
     },
 }
 
+COMPETITOR_RESEARCH_JSON_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "additionalProperties": False,
+    "required": ["analysis", "products", "differentiation_strategy", "uniqueness_angle"],
+    "properties": {
+        "analysis": {"type": "string"},
+        "products": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "additionalProperties": False,
+                "required": [
+                    "name",
+                    "url",
+                    "positioning",
+                    "overlap",
+                    "difference",
+                    "threat_level",
+                ],
+                "properties": {
+                    "name": {"type": "string"},
+                    "url": {"type": "string"},
+                    "positioning": {"type": "string"},
+                    "overlap": {"type": "string"},
+                    "difference": {"type": "string"},
+                    "threat_level": {"type": "integer"},
+                },
+            },
+        },
+        "differentiation_strategy": {"type": "array", "items": {"type": "string"}},
+        "uniqueness_angle": {"type": "string"},
+    },
+}
+
 
 class MockInspirationProvider:
     async def generate(
@@ -228,7 +278,7 @@ class MockInspirationProvider:
         await asyncio.sleep(0.01)
         feasibility = self._feasibility(direction, request.depth)
 
-        await progress(65, "分析市场新颖性")
+        await progress(60, "侦查同类产品与差异化空间")
         await asyncio.sleep(0.01)
         novelty = self._novelty(direction)
 
@@ -341,6 +391,11 @@ class MockInspirationProvider:
 - 差异化空间：聚焦“个人开发者灵感到执行”的闭环，而不是泛化的趋势摘要。
 - 竞品观察：多数工具停留在内容聚合，较少把技术可行性、市场空白和 MVP 路线压缩到一份报告。
 
+## 同类产品侦查
+- 已有同类：模拟竞品包括趋势聚合、灵感列表和通用 AI 报告工具。
+- 我们的区别：把实时信号、技术复核、MVP 路线和可导出报告压缩为一个面向个人开发者的闭环。
+- 独特性策略：先做窄方向、可追溯来源和二次行动建议，而不是只输出宽泛摘要。
+
 ## 商业潜力参考
 - 评分：{scores["business_potential"]}/100
 - 目标用户：独立开发者、开源维护者、技术创作者。
@@ -447,31 +502,85 @@ class OpenAIAgentsProvider:
                 *source_analyses,
             ]
 
-        await progress(65, "Codex agent 复核技术可行性")
-        cached_technical_analysis = checkpoint.get("technical_analysis")
-        if isinstance(cached_technical_analysis, str) and cached_technical_analysis.strip():
-            await progress(65, "复用技术可行性复核")
-            technical_analysis = cached_technical_analysis
-        else:
-            technical_analysis = await self._research_runtime.run(
-                self._technical_research_prompt(
+        await progress(65, "Codex agent 并行分析技术可行性与同类产品")
+
+        async def get_technical_analysis() -> tuple[str, bool]:
+            cached_technical_analysis = checkpoint.get("technical_analysis")
+            if isinstance(cached_technical_analysis, str) and cached_technical_analysis.strip():
+                await progress(66, "复用技术可行性复核")
+                return cached_technical_analysis, True
+            await progress(66, "Codex agent 复核技术可行性")
+            return (
+                await self._research_runtime.run(
+                    self._technical_research_prompt(
+                        direction=direction,
+                        depth=request.depth,
+                        source_analyses=source_analyses,
+                        snapshots=snapshots,
+                    )
+                ),
+                False,
+            )
+
+        async def get_competitor_research() -> tuple[dict[str, Any], bool]:
+            cached_competitor_research = checkpoint.get("competitor_research")
+            if isinstance(cached_competitor_research, dict):
+                await progress(66, "复用同类产品侦查")
+                return (
+                    self._restore_competitor_research(
+                        cached_competitor_research,
+                        direction,
+                    ),
+                    True,
+                )
+            await progress(66, "Codex 同类产品侦查 agent")
+            return (
+                await self._run_competitor_research(
                     direction=direction,
                     depth=request.depth,
                     source_analyses=source_analyses,
                     snapshots=snapshots,
-                )
-            )
-            await _save_resume_checkpoint(
-                progress,
-                {"codex": {"direction": direction, "technical_analysis": technical_analysis}},
+                ),
+                False,
             )
 
+        technical_result, competitor_result = await asyncio.gather(
+            get_technical_analysis(),
+            get_competitor_research(),
+            return_exceptions=True,
+        )
+        checkpoint_patch: dict[str, Any] = {"direction": direction}
+        errors: list[BaseException] = []
+        if isinstance(technical_result, BaseException):
+            errors.append(technical_result)
+        else:
+            technical_analysis, technical_analysis_was_cached = technical_result
+            if not technical_analysis_was_cached:
+                checkpoint_patch["technical_analysis"] = technical_analysis
+        if isinstance(competitor_result, BaseException):
+            errors.append(competitor_result)
+        else:
+            competitor_research, competitor_research_was_cached = competitor_result
+            if not competitor_research_was_cached:
+                checkpoint_patch["competitor_research"] = competitor_research
+        if len(checkpoint_patch) > 1:
+            await _save_resume_checkpoint(progress, {"codex": checkpoint_patch})
+        if errors:
+            raise errors[0]
+
         cached_final_text = checkpoint.get("orchestrator_output_text")
-        if isinstance(cached_final_text, str) and cached_final_text.strip():
+        final_text_was_cached = False
+        if (
+            isinstance(cached_final_text, str)
+            and cached_final_text.strip()
+            and technical_analysis_was_cached
+            and competitor_research_was_cached
+        ):
             await progress(82, "复用 Codex Orchestrator 汇总报告")
             final_text = cached_final_text
+            final_text_was_cached = True
         else:
-            await progress(82, "Codex Orchestrator 汇总报告")
+            await progress(85, "Codex Orchestrator 汇总报告")
             final_text = await self._research_runtime.run(
                 self._orchestrator_prompt(
                     {
@@ -488,6 +597,7 @@ class OpenAIAgentsProvider:
                         "source_snapshots": [snapshot.as_dict() for snapshot in snapshots],
                         "source_analyses": source_analyses,
                         "codex_technical_analysis": technical_analysis,
+                        "codex_competitor_research": competitor_research,
                     }
                 ),
                 output_schema=OPENAI_REPORT_JSON_SCHEMA,
@@ -495,7 +605,7 @@ class OpenAIAgentsProvider:
 
         await progress(95, "校验多 Agent 报告结构")
         report = self._parse_report_text(final_text)
-        if not isinstance(cached_final_text, str) or not cached_final_text.strip():
+        if not final_text_was_cached:
             await _save_resume_checkpoint(
                 progress,
                 {"codex": {"direction": direction, "orchestrator_output_text": final_text}},
@@ -508,6 +618,24 @@ class OpenAIAgentsProvider:
             output_schema=YOLO_DISCOVERY_JSON_SCHEMA,
         )
         return self._parse_yolo_discovery_text(text, request)
+
+    async def _run_competitor_research(
+        self,
+        direction: str,
+        depth: str,
+        source_analyses: list[dict[str, str]],
+        snapshots: list[SourceSnapshot],
+    ) -> dict[str, Any]:
+        text = await self._research_runtime.run(
+            self._competitor_research_prompt(
+                direction=direction,
+                depth=depth,
+                source_analyses=source_analyses,
+                snapshots=snapshots,
+            ),
+            output_schema=COMPETITOR_RESEARCH_JSON_SCHEMA,
+        )
+        return self._parse_competitor_research_text(text, direction)
 
     def _codex_checkpoint(self, request: GenerateTaskRequest) -> dict[str, Any]:
         checkpoint = request.checkpoint.get("codex")
@@ -548,6 +676,20 @@ class OpenAIAgentsProvider:
             "snapshot": snapshot,
             "analysis": str(checkpoint.get("analysis") or "").strip(),
         }
+
+    def _restore_competitor_research(
+        self,
+        checkpoint: dict[str, Any],
+        direction: str,
+    ) -> dict[str, Any]:
+        try:
+            payload = _CompetitorResearchPayload.model_validate(checkpoint)
+        except ValidationError:
+            return self._fallback_competitor_research(
+                direction,
+                "Saved competitor research checkpoint was incomplete",
+            )
+        return self._competitor_research_payload(payload, direction)
 
     def _snapshot_from_dict(self, payload: Any) -> SourceSnapshot | None:
         if not isinstance(payload, dict):
@@ -748,6 +890,56 @@ class OpenAIAgentsProvider:
             ensure_ascii=False,
         )
 
+    def _competitor_research_prompt(
+        self,
+        direction: str,
+        depth: str,
+        source_analyses: list[dict[str, str]],
+        snapshots: list[SourceSnapshot],
+    ) -> str:
+        return json.dumps(
+            {
+                "role": "Codex competitor landscape agent",
+                "language": "zh-CN",
+                "task": (
+                    "Investigate whether similar or substitute products already exist for "
+                    "input.direction. Use your own browser/web-search/network tools to inspect "
+                    "current public product pages, launch pages, repositories, documentation, "
+                    "pricing pages, and discussions. Do not call or rely on this application's "
+                    "backend scraping APIs. ConceptDrift is only the local report-generation app, "
+                    "not a competitor, unless input.direction explicitly names it."
+                ),
+                "input": {
+                    "direction": direction,
+                    "depth": depth,
+                    "source_analyses": source_analyses,
+                    "source_snapshots": [snapshot.as_dict() for snapshot in snapshots],
+                },
+                "requirements": [
+                    "Return only JSON matching the supplied output schema.",
+                    "Answer whether the market already has similar products or close substitutes.",
+                    "Inspect 3-7 direct or adjacent products when available; prefer primary URLs.",
+                    (
+                        "For each product, compare positioning, overlap with our product, "
+                        "difference, and threat_level from 0 to 100."
+                    ),
+                    (
+                        "differentiation_strategy must list concrete product decisions that can "
+                        "make our product distinctive."
+                    ),
+                    (
+                        "uniqueness_angle must explain how to avoid becoming a generic clone or "
+                        "broad trend summary."
+                    ),
+                    (
+                        "If no direct competitor is found, explain the search boundary and include "
+                        "adjacent substitutes."
+                    ),
+                ],
+            },
+            ensure_ascii=False,
+        )
+
     def _orchestrator_prompt(self, payload: dict[str, Any]) -> str:
         return json.dumps(
             {
@@ -756,11 +948,12 @@ class OpenAIAgentsProvider:
                 "task": (
                     "Synthesize the final developer inspiration report for the opportunity in "
                     "input.direction using the provided Codex research snapshots, source analyses, "
-                    "and technical review. ConceptDrift is only the local report-generation app, "
-                    "not the product, opportunity, startup, or project being evaluated unless the "
-                    "user explicitly supplied it as input.direction. Do not call this application's "
-                    "backend scraping APIs. Treat source_snapshots as the evidence base and only "
-                    "use browser/web-search tools if a current fact is materially necessary."
+                    "technical review, and competitor landscape research. ConceptDrift is only "
+                    "the local report-generation app, not the product, opportunity, startup, or "
+                    "project being evaluated unless the user explicitly supplied it as "
+                    "input.direction. Do not call this application's backend scraping APIs. "
+                    "Treat source_snapshots as the evidence base and only use browser/web-search "
+                    "tools if a current fact is materially necessary."
                 ),
                 "input": payload,
                 "requirements": [
@@ -772,8 +965,13 @@ class OpenAIAgentsProvider:
                     ),
                     (
                         "markdown must be a complete Markdown report with 摘要、核心概念、"
-                        "技术可行性、市场新颖性、商业潜力、灵感来源、"
-                        "MVP 建议."
+                        "技术可行性、市场新颖性、同类产品侦查、独特性策略、"
+                        "商业潜力、灵感来源、MVP 建议."
+                    ),
+                    (
+                        "The 同类产品侦查 and 独特性策略 sections must use "
+                        "input.codex_competitor_research to explain existing products, "
+                        "how our product differs, and what to do to become distinctive."
                     ),
                     (
                         "When request_mode is yolo, center the report on input.direction "
@@ -783,7 +981,11 @@ class OpenAIAgentsProvider:
                         "scores.technical_feasibility, scores.market_novelty, and "
                         "scores.business_potential must be integers from 0 to 100."
                     ),
-                    "sources must be grounded in the provided source_snapshots.",
+                    (
+                        "scores.market_novelty must reflect the competitor landscape; sources "
+                        "must be grounded in the provided source_snapshots or competitor product "
+                        "URLs."
+                    ),
                 ],
             },
             ensure_ascii=False,
@@ -870,6 +1072,51 @@ class OpenAIAgentsProvider:
         )
         return snapshot, payload.analysis.strip()
 
+    def _parse_competitor_research_text(self, text: str, direction: str) -> dict[str, Any]:
+        try:
+            payload = _CompetitorResearchPayload.model_validate_json(text)
+        except ValidationError:
+            return self._fallback_competitor_research(
+                direction,
+                "Codex competitor research output was not valid JSON",
+            )
+        return self._competitor_research_payload(payload, direction)
+
+    def _competitor_research_payload(
+        self,
+        payload: _CompetitorResearchPayload,
+        direction: str,
+    ) -> dict[str, Any]:
+        products = [
+            {
+                "name": item.name.strip() or "Unnamed competitor",
+                "url": item.url.strip() or "https://example.com",
+                "positioning": item.positioning.strip(),
+                "overlap": item.overlap.strip(),
+                "difference": item.difference.strip(),
+                "threat_level": score(item.threat_level),
+            }
+            for item in payload.products
+            if item.name.strip() or item.url.strip() or item.positioning.strip()
+        ]
+        strategy = [item.strip() for item in payload.differentiation_strategy if item.strip()]
+        if not strategy:
+            strategy = self._fallback_differentiation_strategy(direction)
+        analysis = payload.analysis.strip()
+        uniqueness_angle = payload.uniqueness_angle.strip()
+        if not analysis:
+            analysis = (
+                f"同类产品侦查未返回完整分析。最终报告应围绕“{direction}”补充市场替代品和差异化判断。"
+            )
+        if not uniqueness_angle:
+            uniqueness_angle = self._fallback_uniqueness_angle(direction)
+        return {
+            "analysis": analysis,
+            "products": products,
+            "differentiation_strategy": strategy,
+            "uniqueness_angle": uniqueness_angle,
+        }
+
     def _fallback_snapshot(
         self,
         source_id: str,
@@ -922,21 +1169,47 @@ class OpenAIAgentsProvider:
             return source_home_url(request.sources[0])
         return "https://github.com/trending"
 
+    def _fallback_competitor_research(self, direction: str, reason: str) -> dict[str, Any]:
+        return {
+            "analysis": (
+                f"同类产品侦查未能返回可解析结构，原因：{reason}。最终报告必须显式标注需要继续人工复核 "
+                f"“{direction}”的直接竞品、相邻替代品、定价和定位差异。"
+            ),
+            "products": [],
+            "differentiation_strategy": self._fallback_differentiation_strategy(direction),
+            "uniqueness_angle": self._fallback_uniqueness_angle(direction),
+        }
+
+    def _fallback_differentiation_strategy(self, direction: str) -> list[str]:
+        return [
+            f"把“{direction}”压到一个清晰高频的开发者工作流场景，而不是做泛化平台。",
+            "保留可追溯来源、技术复核和可执行 MVP 路线，形成从信号到行动的闭环。",
+            "优先做独特数据组织、自动化触发和复用模板，避免只复制竞品的摘要体验。",
+        ]
+
+    def _fallback_uniqueness_angle(self, direction: str) -> str:
+        return (
+            f"“{direction}”的独特性应来自窄人群、可验证工作流和行动闭环：用户不只是看到趋势，"
+            "还要得到为什么现在做、与现有产品差在哪、下一步怎么验证的具体路径。"
+        )
+
     def _orchestrator_instructions(self) -> str:
         return (
             "你是开发者灵感报告的中心编排 Agent。ConceptDrift 只是生成报告的本地应用名，"
             "不是被调研的产品、机会、创业项目或开源项目，除非 direction 明确要求调研它。"
             "你必须综合 source_analyses、"
-            "source_snapshots 和 codex_technical_analysis，生成最终开发者灵感报告。"
+            "source_snapshots、codex_technical_analysis 和 codex_competitor_research，"
+            "生成最终开发者灵感报告。"
             "title、summary、markdown、tags 和 sources 必须围绕 direction 字段里的主题，"
             "不要把 ConceptDrift 当作报告主题、产品名、来源或标签。"
             "只返回 JSON，不要 Markdown code fence，不要解释。JSON 必须符合输入中的 "
             "required_json_schema。markdown 字段内部必须是完整 Markdown 报告，并包含："
-            "摘要、核心概念、技术可行性、市场新颖性、商业潜力、灵感来源、MVP 建议。"
+            "摘要、核心概念、技术可行性、市场新颖性、同类产品侦查、独特性策略、"
+            "商业潜力、灵感来源、MVP 建议。"
             "当 request_mode 为 yolo 时，报告必须围绕 direction 字段里的自动发现方向，"
             "并在摘要或灵感来源中说明 YOLO Discovery 为什么选择它。"
-            "scores 三个分数必须是 0-100 整数；sources 必须来自 Codex 调研生成的 "
-            "source_snapshots。"
+            "scores 三个分数必须是 0-100 整数；market_novelty 必须反映同类产品格局；"
+            "sources 必须来自 Codex 调研生成的 source_snapshots 或同类产品 URL。"
         )
 
     def _parse_report_text(self, text: str) -> GeneratedReport:

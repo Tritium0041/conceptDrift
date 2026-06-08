@@ -173,7 +173,7 @@ Codex provider 的主要阶段：
 1. 启动 Codex 调研与编排。
 2. YOLO 模式下先运行 “Codex YOLO direction discovery agent” 自动发现方向。
 3. 对用户选择的来源并发运行 “Codex source research agent”。
-4. 运行技术可行性复核 prompt。
+4. 并行运行技术可行性复核 prompt 和 “Codex competitor landscape agent”。
 5. 运行最终 “Codex Orchestrator Agent” prompt，输出符合 JSON schema 的报告。
 6. 校验结构并写入数据库。
 

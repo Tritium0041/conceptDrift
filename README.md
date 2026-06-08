@@ -60,7 +60,7 @@ npm run dev -- --hostname 127.0.0.1 --port 3000
 | :--- | :--- | :--- |
 | `mock` | 本地确定性报告，适合开发、演示和回归测试 | 否 |
 | `response` | 单次 OpenAI-compatible Responses API 调用，适合验证模型连通性 | 是 |
-| `codex` | direct Codex threads 负责 YOLO 选题、来源调研、技术复核和最终汇总 | 是 |
+| `codex` | direct Codex threads 负责 YOLO 选题、来源调研、技术复核、同类产品侦查和最终汇总 | 是 |
 
 `codex` provider 不使用后端内置站点抓取器。GitHub、Hacker News、Product Hunt、Last30Days、Reddit 是 Codex 的调研目标，Codex 通过自己的浏览器、外部搜索、网络能力或用户自行安装的 `last30days` skill 检查公开页面并返回结构化信号。
 
